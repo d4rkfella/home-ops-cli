@@ -1,24 +1,23 @@
 import asyncio
-from datetime import datetime
 from collections.abc import Awaitable
-from typing import Any
+from datetime import datetime
 from enum import Enum
-from typing_extensions import Annotated
+from typing import Any
+
+import aiohttp
 import inquirer
+import typer
 from inquirer.themes import RedSolace
 from rich.console import Console
-import aiohttp
-import typer
-from rich.progress import (
-    BarColumn,
-    Progress,
-    TextColumn,
-    TimeElapsedColumn,
-)
+from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
+from typing_extensions import Annotated
 
-from .callbacks import validate_github_token, validate_repo_format
-from .utils import send_gh_request
-from ..utils import async_command
+from ..utils import (
+    async_command,
+    send_gh_request,
+    validate_github_token,
+    validate_repo_format,
+)
 
 
 class WorkflowStatus(str, Enum):
@@ -32,6 +31,7 @@ class WorkflowStatus(str, Enum):
     COMPLETED = "completed"
     IN_PROGRESS = "in_progress"
     QUEUED = "queued"
+
 
 app = typer.Typer()
 

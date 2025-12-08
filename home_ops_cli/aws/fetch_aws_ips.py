@@ -1,9 +1,11 @@
-import typer
-import aiohttp
 from pathlib import Path
-from ..utils import async_command
-from typing_extensions import Annotated
+
+import aiohttp
+import typer
 from ruamel.yaml import YAML
+from typing_extensions import Annotated
+
+from ..utils import async_command
 
 app = typer.Typer()
 

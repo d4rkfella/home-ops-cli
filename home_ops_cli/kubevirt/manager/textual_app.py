@@ -1,14 +1,13 @@
 import asyncio
+import os
+import subprocess
 from dataclasses import dataclass
+from enum import Enum, auto
 from pathlib import Path
 from typing import Any, cast
-from enum import Enum, auto
-import subprocess
-import os
 
 import usb.core
 import usb.util
-from usb.core import Device
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from kubernetes_asyncio import client, config, watch
@@ -31,6 +30,7 @@ from textual.widgets import (
     Static,
     TextArea,
 )
+from usb.core import Device
 
 
 class VMStatus(Enum):

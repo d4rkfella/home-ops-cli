@@ -1,8 +1,8 @@
 import typer
 
 from .bootstrap import app as bootstrap
-from .raft_snapshot_restore import app as raft_snapshot_restore
 from .pki import app as pki
+from .raft_snapshot_restore import app as raft_snapshot_restore
 
 app = typer.Typer()
 

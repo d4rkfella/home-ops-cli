@@ -1,6 +1,6 @@
 import typer
-from .textual_app import KubevirtManager
 
+from .textual_app import KubevirtManager
 
 app = typer.Typer()
 

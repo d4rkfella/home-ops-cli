@@ -1,70 +1,18 @@
 import re
-from datetime import datetime
-from dateutil.parser import parse as parse_datetime
 from collections.abc import Mapping, Sequence
 from typing import cast
 
-import typer
 import boto3
 import botocore.exceptions
 import hvac
+import typer
 from hvac.api.system_backend import Raft
-from hvac.exceptions import VaultError, InvalidRequest
+from hvac.exceptions import InvalidRequest, VaultError
 from typing_extensions import Annotated
 
+from ..utils import parse_regex, select_snapshot
+
 app = typer.Typer()
-
-
-def parse_regex(value: str) -> re.Pattern:
-    try:
-        pattern = re.compile(value)
-    except re.error as e:
-        raise typer.BadParameter(f"{e}")
-    return pattern
-
-
-def select_snapshot(
-    contents: Sequence[Mapping[str, object]], filename_regex: re.Pattern | None
-) -> str:
-    if filename_regex:
-        valid_objects: list[Mapping[str, object]] = []
-
-        for o in contents:
-            key = o.get("Key")
-            if not isinstance(key, str):
-                continue
-
-            match = filename_regex.match(key)
-            if not match:
-                continue
-
-            ts_str = match.group(1)
-            try:
-                ts = parse_datetime(ts_str)
-                valid_objects.append({"Key": key, "Timestamp": ts})
-            except ValueError:
-                continue
-
-        if not valid_objects:
-            raise ValueError(
-                "No valid snapshots found matching the filename regex with parseable timestamp"
-            )
-
-        latest_obj = max(valid_objects, key=lambda o: cast(datetime, o["Timestamp"]))
-        return cast(str, latest_obj["Key"])
-
-    else:
-        valid_objects: list[Mapping[str, object]] = [
-            o
-            for o in contents
-            if isinstance(o.get("Key"), str)
-            and isinstance(o.get("LastModified"), datetime)
-        ]
-        if not valid_objects:
-            raise RuntimeError("No valid snapshots with LastModified found")
-
-        latest_obj = max(valid_objects, key=lambda o: cast(datetime, o["LastModified"]))
-        return cast(str, latest_obj["Key"])
 
 
 @app.command(help="Restore a HashiCorp Vault cluster from an S3 Raft snapshot.")

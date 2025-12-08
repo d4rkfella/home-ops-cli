@@ -1,15 +1,17 @@
-import typer
-import tempfile
-import subprocess
 import base64
 import shutil
+import subprocess
+import tempfile
 from pathlib import Path
+
+import typer
 from ruamel.yaml import YAML
 from typing_extensions import Annotated
 
 yaml = YAML()
 
 app = typer.Typer()
+
 
 @app.command(
     help="Creates new talosconfig with key pair using the root Talos API CA from the control plane machine configuration."

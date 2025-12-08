@@ -2,13 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import re
 import shutil
 import subprocess
 import time
-from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from functools import wraps
 from pathlib import Path
 from typing import Any, Literal, cast
 from urllib.parse import urlparse, urlunparse
@@ -17,12 +14,11 @@ import aiofiles
 import aiogzip
 import aiohttp
 import typer
-from kubernetes_asyncio import client, config  # type: ignore
-from kubernetes_asyncio.client.exceptions import ApiException  # type: ignore
-from kubernetes_asyncio.config import ConfigException  # type: ignore
-from kubernetes_asyncio.dynamic import DynamicClient  # type: ignore
 from kr8s.objects import object_from_spec
 from kr8s.portforward import PortForward
+from kubernetes_asyncio import client  # type: ignore
+from kubernetes_asyncio.client.exceptions import ApiException  # type: ignore
+from kubernetes_asyncio.dynamic import DynamicClient  # type: ignore
 from kubevirt import ApiClient, Configuration, DefaultApi
 from kubevirt.models import (
     K8sIoApiCoreV1TypedLocalObjectReference,
@@ -43,6 +39,9 @@ from rich.progress import (
     TransferSpeedColumn,
 )
 from typing_extensions import Annotated
+
+from ...exceptions import RetryableDownloadError, VMExportAlreadyExistsError
+from ...utils import async_command, dynamic_client, parse_content_range, validate_ttl
 
 VMImageFormat = Literal["gzip", "raw", "qcow2"]
 ManifestFormat = Literal["yaml", "json"]
@@ -75,30 +74,6 @@ class VMExportInfo:
     annotations: dict[str, str]
 
 
-def async_command(f):
-    @wraps(f)
-    def wrapper(*args, **kwargs):
-        return asyncio.run(f(*args, **kwargs))
-
-    return wrapper
-
-
-@asynccontextmanager
-async def k8s_client():
-    try:
-        await config.load_kube_config()
-        print("configuration loaded from kubeconfig.")
-    except ConfigException:
-        try:
-            config.load_incluster_config()
-            print("configuration loaded from in-cluster service account.")
-        except ConfigException as e:
-            raise RuntimeError(f"Could not load Kubernetes configuration: {e}")
-    async with client.ApiClient() as api_client:
-        dyn_client = await DynamicClient(api_client)
-        yield dyn_client
-
-
 app = typer.Typer(
     help="vmexport CLI (Typer port of KubeVirt virtctl vmexport download)"
 )
@@ -108,38 +83,6 @@ TRANSIENT_HTTP_STATUSES = {500, 502, 503, 504}
 CHUNK_SIZE_DEFAULT = 10 * 1024 * 1024
 PROCESSING_WAIT_INTERVAL = 2
 EXPORT_TOKEN_HEADER = "x-kubevirt-export-token"
-
-
-def validate_ttl(value: str | None) -> str | None:
-    if value is None or value == "":
-        return None
-
-    pattern = re.compile(r"^(\d+h)?(\d+m)?(\d+s)?$")
-    if not pattern.fullmatch(value):
-        raise typer.BadParameter(
-            "Invalid TTL. Use Go duration parts (h,m,s) only. Examples: 30m, 1h, 2h15m, 45s"
-        )
-    return value
-
-
-def parse_content_range(value: str) -> tuple[int, int | None, int | None] | None:
-    m = re.match(r"^bytes (\d+)-(\d+|\*)/(\d+|\*)$", value)
-    if not m:
-        return None
-    start, end, total = m.groups()
-    return (
-        int(start),
-        (None if end == "*" else int(end)),
-        (None if total == "*" else int(total)),
-    )
-
-
-class RetryableDownloadError(Exception):
-    pass
-
-
-class VMExportAlreadyExistsError(Exception):
-    pass
 
 
 async def wait_for_service(dyn, namespace: str, service_name: str, timeout: int = 30):
@@ -223,7 +166,6 @@ async def setup_port_forward(dyn, vme_info: VMExportInfo) -> PortForward:
 
     pf = PortForward(pod, remote_port=target_port, local_port=vme_info.local_port)
     pf.start()
-
 
     if vme_info.local_port == 0:
         while pf.local_port == 0:
@@ -879,7 +821,7 @@ async def download(
     if pvc and manifest:
         raise typer.BadParameter("cannot get manifest for PVC export")
 
-    async with k8s_client() as dyn:
+    async with dynamic_client() as dyn:
         k8s_conf = client.Configuration.get_default_copy()
 
         kv_conf = Configuration()

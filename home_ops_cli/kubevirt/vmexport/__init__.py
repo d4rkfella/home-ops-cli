@@ -1,7 +1,7 @@
 import typer
 
-from .download import app as download_app
+from .download import app as download
 
 app = typer.Typer()
 
-app.add_typer(download_app)
+app.add_typer(download)

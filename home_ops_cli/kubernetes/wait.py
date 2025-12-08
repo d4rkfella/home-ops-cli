@@ -1,22 +1,22 @@
-import typer
 import asyncio
-from kubernetes_asyncio import watch
-from collections.abc import Callable
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing_extensions import Annotated
-from .utils import dynamic_client
-from ..utils import async_command
 
+import typer
+from kubernetes_asyncio import watch
 from rich.progress import (
+    BarColumn,
     Progress,
     SpinnerColumn,
-    TextColumn,
-    BarColumn,
-    TaskProgressColumn,
-    TimeElapsedColumn,
     TaskID,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
 )
+from typing_extensions import Annotated
+
+from ..utils import async_command, dynamic_client
 
 
 @dataclass(frozen=True)
@@ -158,7 +158,8 @@ async def wait_for_resources_group(
 app = typer.Typer()
 
 
-@app.command(help=(
+@app.command(
+    help=(
         "Watches specified Kubernetes workloads (Deployments, DaemonSets, StatefulSets) "
         "and/or CustomResourceDefinitions (CRDs), and waits for them to become ready. "
         "A readiness check is performed for each resource based on its type:\n\n"
@@ -170,7 +171,8 @@ app = typer.Typer()
         "  crd/mycrd\n\n"
         "Multiple resources can be passed, optionally in different namespaces. "
         "An overall progress bar shows total progress, while individual spinners show per-resource readiness."
-    ))
+    )
+)
 @async_command
 async def wait(
     resources: Annotated[
@@ -182,7 +184,9 @@ async def wait(
     async with dynamic_client() as dyn:
         parsed_resources = {res for r in resources for res in parse_resource(r)}
 
-        groups: defaultdict[tuple[str, str, str | None], set[ResourceSpec]] = defaultdict(set)
+        groups: defaultdict[tuple[str, str, str | None], set[ResourceSpec]] = (
+            defaultdict(set)
+        )
         for r in parsed_resources:
             groups[(r.kind, r.api_version, r.namespace)].add(r)
 
