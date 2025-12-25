@@ -1,15 +1,13 @@
 import re
-from collections.abc import Mapping, Sequence
-from typing import cast
 
-import boto3
-import botocore.exceptions
 import hvac
+from hvac.exceptions import InvalidRequest
 import typer
-from hvac.api.system_backend import Raft
+import time
 from typing_extensions import Annotated
 
-from ..utils import parse_regex, select_snapshot
+from ..utils import parse_regex
+from .restore_raft_snapshot import restore_raft_snapshot
 
 app = typer.Typer()
 
@@ -34,85 +32,62 @@ def bootstrap(
         typer.Option(parser=parse_regex, help="Regex to match snapshot filenames"),
     ] = None,
     aws_profile: Annotated[str | None, typer.Option(help="AWS profile to use")] = None,
-    dry_run: Annotated[
-        bool, typer.Option(help="If set, only selects snapshot without restoring")
-    ] = False,
 ):
-    if filename and filename_regex:
-        raise typer.BadParameter(
-            "snapshot_file and filename_regex are mutually exclusive"
-        )
-
-    session = (
-        boto3.Session(profile_name=aws_profile) if aws_profile else boto3.Session()
-    )
-    s3_client = session.client("s3")
-
-    try:
-        if filename:
-            key = f"{s3_prefix}/{filename}" if s3_prefix else filename
-            try:
-                s3_client.head_object(Bucket=s3_bucket, Key=key)
-            except botocore.exceptions.ClientError as e:
-                raise RuntimeError(
-                    f"Snapshot {key} does not exist in bucket {s3_bucket}: {e}"
-                )
-            typer.echo(f"Selected user-provided snapshot: {key}")
-        else:
-            try:
-                resp = s3_client.list_objects_v2(Bucket=s3_bucket, Prefix=s3_prefix)
-            except botocore.exceptions.ClientError as e:
-                raise RuntimeError(f"Failed to access bucket {s3_bucket}: {e}")
-
-            if not (
-                contents := cast(
-                    Sequence[Mapping[str, object]], resp.get("Contents", [])
-                )
-            ):
-                raise RuntimeError(
-                    f"No snapshots found in s3://{s3_bucket}/{s3_prefix}"
-                )
-
-            key = select_snapshot(contents, filename_regex=filename_regex)
-            typer.echo(f"Selected latest snapshot: {key}")
-
-        typer.echo(f"Downloading snapshot from s3://{s3_bucket}/{key}")
-        if not (
-            snapshot_bytes := s3_client.get_object(Bucket=s3_bucket, Key=key)[
-                "Body"
-            ].read()
-        ):
-            raise RuntimeError(f"Snapshot {key} is empty or invalid.")
-
-    except ValueError as ve:
-        typer.echo(f"Snapshot selection failed: {ve}", err=True)
-        raise typer.Exit(code=1)
-    except RuntimeError as re_err:
-        typer.echo(f"Error: {re_err}", err=True)
-        raise typer.Exit(code=1)
-
-    if dry_run:
-        typer.echo("Dry-run mode: skipping Vault restore.")
-        return
-
     client = hvac.Client(url=addr)
-    raft = Raft(client.adapter)
 
     if not client.sys.is_initialized():
-        typer.echo("Initializing Vault cluster...")
-        result = client.sys.initialize()
+        typer.echo("Vault is not initialized. Starting initialization sequence...")
+
+        is_kms = False
+        try:
+            typer.echo("Attempting Auto-Unseal (KMS) initialization...")
+            result = client.sys.initialize(recovery_shares=5, recovery_threshold=3)
+            is_kms = True
+            typer.echo("Successfully initialized with Auto-Unseal.")
+        except InvalidRequest as e:
+            if (
+                "not applicable to seal type" in str(e).lower()
+                or "secret_shares" in str(e).lower()
+            ):
+                typer.echo(
+                    "KMS not supported by this instance. Falling back to Shamir initialization..."
+                )
+                result = client.sys.initialize(secret_shares=5, secret_threshold=3)
+                is_kms = False
+            else:
+                raise e
+
         root_token = result["root_token"]
-        keys = result["keys"]
-
         client.token = root_token
-        typer.echo("Unsealing Vault cluster...")
-        client.sys.submit_unseal_keys(keys)
 
-        typer.echo("Restoring snapshot via Raft API...")
-        resp = raft.force_restore_raft_snapshot(snapshot_bytes)
-        if resp.status_code >= 400:
-            typer.echo(f"Vault restore failed: {resp.text}", err=True)
-            raise typer.Exit(code=1)
-        typer.echo("Vault restore completed successfully.")
+        if not is_kms:
+            typer.echo("Unsealing with Shamir keys...")
+            keys = result["keys"]
+            client.sys.submit_unseal_keys(keys)
+        else:
+            typer.echo("Waiting for Auto-Unseal to complete...")
+            attempts = 0
+            while client.sys.is_sealed() and attempts < 10:
+                time.sleep(1)
+                attempts += 1
+
+            if client.sys.is_sealed():
+                typer.echo(
+                    "Error: Vault is still sealed after Auto-Unseal init. Check Vault logs."
+                )
+                raise typer.Exit(code=1)
+
+        typer.echo("Vault is unsealed and ready. Starting restore...")
+
+        restore_raft_snapshot(
+            addr=addr,
+            s3_bucket=s3_bucket,
+            s3_prefix=s3_prefix,
+            filename=filename,
+            filename_regex=filename_regex,
+            aws_profile=aws_profile,
+            force_restore=True,
+            token=root_token,
+        )
     else:
         typer.echo("Vault already initialized. Skipping bootstrap procedure.")

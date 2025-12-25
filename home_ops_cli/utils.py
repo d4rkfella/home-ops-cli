@@ -2,15 +2,16 @@ import asyncio
 import random
 import re
 import time
-from collections.abc import Mapping, Sequence
+import os
 from contextlib import asynccontextmanager
-from datetime import datetime
 from functools import wraps
-from typing import Any, Literal, cast, overload
+from typing import Any, Literal, overload
+from pathlib import Path
+import hvac
 
 import aiohttp
 import typer
-from dateutil.parser import parse as parse_datetime
+from hvac.exceptions import InvalidRequest, VaultError
 from kubernetes_asyncio import client, config  # type: ignore
 from kubernetes_asyncio.config import ConfigException
 from kubernetes_asyncio.dynamic import DynamicClient  # type: ignore
@@ -137,50 +138,6 @@ def parse_regex(value: str) -> re.Pattern:
     return pattern
 
 
-def select_snapshot(
-    contents: Sequence[Mapping[str, object]], filename_regex: re.Pattern | None
-) -> str:
-    if filename_regex:
-        valid_objects: list[Mapping[str, object]] = []
-
-        for o in contents:
-            key = o.get("Key")
-            if not isinstance(key, str):
-                continue
-
-            match = filename_regex.match(key)
-            if not match:
-                continue
-
-            ts_str = match.group(1)
-            try:
-                ts = parse_datetime(ts_str)
-                valid_objects.append({"Key": key, "Timestamp": ts})
-            except ValueError:
-                continue
-
-        if not valid_objects:
-            raise ValueError(
-                "No valid snapshots found matching the filename regex with parseable timestamp"
-            )
-
-        latest_obj = max(valid_objects, key=lambda o: cast(datetime, o["Timestamp"]))
-        return cast(str, latest_obj["Key"])
-
-    else:
-        valid_objects: list[Mapping[str, object]] = [
-            o
-            for o in contents
-            if isinstance(o.get("Key"), str)
-            and isinstance(o.get("LastModified"), datetime)
-        ]
-        if not valid_objects:
-            raise RuntimeError("No valid snapshots with LastModified found")
-
-        latest_obj = max(valid_objects, key=lambda o: cast(datetime, o["LastModified"]))
-        return cast(str, latest_obj["Key"])
-
-
 @overload
 async def send_gh_request(
     session: aiohttp.ClientSession,
@@ -290,3 +247,55 @@ def validate_github_token(value: str) -> str:
         raise typer.BadParameter(error_msg)
 
     return value
+
+
+def handle_vault_authentication(
+    client: hvac.Client,
+    vault_url: str,
+    vault_token: str | None,
+    k8s_role: str | None,
+    k8s_mount_point: str,
+) -> hvac.Client:
+    K8S_JWT_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    TOKEN_FILEPATH = Path.home() / ".vault-token"
+    typer.echo(f"Connecting to Vault at: {vault_url}...")
+    if k8s_role:
+        typer.echo(f"Attempting Kubernetes Auth for role: {k8s_role}...")
+
+        if not os.path.exists(K8S_JWT_PATH):
+            typer.secho(
+                f"K8s JWT file not found at {K8S_JWT_PATH}. Cannot proceed with K8s Auth.",
+                fg=typer.colors.RED,
+                bold=True,
+            )
+            raise typer.Exit(code=1)
+
+        with open(K8S_JWT_PATH, "r") as f:
+            jwt = f.read().strip()
+
+        try:
+            client.auth.kubernetes.login(
+                role=k8s_role, jwt=jwt, mount_point=k8s_mount_point
+            )
+            return client
+
+        except (InvalidRequest, VaultError) as e:
+            typer.secho(f"Kubernetes Auth Failed: {e}", fg=typer.colors.RED, bold=True)
+            raise typer.Exit(code=1)
+        except Exception as e:
+            typer.secho(
+                f"Unexpected Error during Kubernetes Auth: {e}",
+                fg=typer.colors.RED,
+                bold=True,
+            )
+            raise typer.Exit(code=1)
+
+    if vault_token:
+        client.token = vault_token
+        return client
+
+    if TOKEN_FILEPATH.exists():
+        saved_token = TOKEN_FILEPATH.read_text().strip()
+        if saved_token:
+            client.token = saved_token
+            return client

@@ -1,6 +1,6 @@
 [project]
 name = "home-ops-cli"
-version = "0.2.1"
+version = "0.2.2"
 description = ""
 requires-python = ">=3.13"
 dependencies = [
@@ -14,6 +14,7 @@ dependencies = [
     "textual==6.7.1",
     "types-hvac==2.4.0.20251115",
     "boto3==1.42.3",
+    "botocore[crt]",
     "boto3-stubs==1.42.3",
     "mypy-boto3-s3==1.42.3",
     "inquirer==3.4.1",
