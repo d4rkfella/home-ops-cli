@@ -1,12 +1,11 @@
+from __future__ import annotations
 import datetime
 import os
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import boto3
 import typer
 from botocore.exceptions import NoCredentialsError, ProfileNotFound
-from mypy_boto3_s3.client import S3Client
-from mypy_boto3_s3.type_defs import DeleteTypeDef
 from textual import work
 from textual.app import App, ComposeResult
 from textual.color import Gradient
@@ -26,6 +25,10 @@ from textual.widgets import (
     Tree,
 )
 from textual.widgets.tree import TreeNode
+
+if TYPE_CHECKING:
+    from mypy_boto3_s3.client import S3Client
+    from mypy_boto3_s3.type_defs import DeleteTypeDef
 
 
 class S3Browser(App):
