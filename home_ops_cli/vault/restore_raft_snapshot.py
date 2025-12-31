@@ -155,20 +155,34 @@ def restore_raft_snapshot(
     if filename and filename_regex:
         raise typer.BadParameter("filename and filename-regex are mutually exclusive")
 
-    if ctx.get_parameter_source("aws_endpoint_url") == ParameterSource.COMMANDLINE:
+    if (
+        aws_endpoint_url
+        and ctx.get_parameter_source("aws_endpoint_url") == ParameterSource.COMMANDLINE
+    ):
         os.environ["AWS_ENDPOINT_URL"] = aws_endpoint_url
 
-    if ctx.get_parameter_source("vault_address") == ParameterSource.COMMANDLINE:
+    if (
+        vault_address
+        and ctx.get_parameter_source("vault_address") == ParameterSource.COMMANDLINE
+    ):
         os.environ["VAULT_ADDR"] = vault_address
 
-    if ctx.get_parameter_source("vault_token") == ParameterSource.COMMANDLINE:
+    if (
+        vault_token
+        and ctx.get_parameter_source("vault_token") == ParameterSource.COMMANDLINE
+    ):
         os.environ["VAULT_TOKEN"] = vault_token
 
-    if ctx.get_parameter_source("aws_profile") == ParameterSource.COMMANDLINE:
+    if (
+        aws_profile
+        and ctx.get_parameter_source("aws_profile") == ParameterSource.COMMANDLINE
+    ):
         os.environ["AWS_PROFILE"] = aws_profile
 
     if (
-        ctx.get_parameter_source("aws_access_key_id") == ParameterSource.COMMANDLINE
+        aws_access_key_id
+        and aws_secret_access_key
+        and ctx.get_parameter_source("aws_access_key_id") == ParameterSource.COMMANDLINE
         and ctx.get_parameter_source("aws_secret_access_key")
         == ParameterSource.COMMANDLINE
     ):

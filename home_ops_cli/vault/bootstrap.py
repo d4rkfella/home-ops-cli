@@ -1,8 +1,10 @@
+import os
 import re
 import time
 
 import hvac
 import typer
+from click.core import ParameterSource
 from hvac.exceptions import InvalidRequest
 from typing_extensions import Annotated
 
@@ -16,14 +18,37 @@ app = typer.Typer()
     help="Init, unseal and force restore a hashicorp vault cluster from S3 storage using raft snapshots"
 )
 def bootstrap(
-    addr: Annotated[
+    ctx: typer.Context,
+    vault_address: Annotated[
         str,
         typer.Option(help="Vault address (or set VAULT_ADDR)", envvar="VAULT_ADDR"),
     ],
-    s3_bucket: Annotated[
+    s3_bucket_name: Annotated[
         str, typer.Option(help="S3 bucket where snapshots are stored")
     ],
-    s3_prefix: Annotated[str, typer.Option(help="S3 prefix/folder for snapshots")] = "",
+    vault_ca_cert: Annotated[
+        str | None,
+        typer.Option(
+            envvar="VAULT_CACERT",
+            help="Path to Vault CA certificate.",
+        ),
+    ] = None,
+    vault_ca_path: Annotated[
+        str | None,
+        typer.Option(
+            envvar="VAULT_CAPATH",
+            help="Path to directory of Vault CA certificates.",
+        ),
+    ] = None,
+    vault_skip_verify: Annotated[
+        bool,
+        typer.Option(
+            envvar="VAULT_SKIP_VERIFY", help="Skip Vault TLS certificate verification."
+        ),
+    ] = False,
+    s3_key_prefix: Annotated[
+        str, typer.Option(help="S3 prefix/folder for snapshots")
+    ] = "",
     filename: Annotated[
         str | None, typer.Option(help="Specific snapshot file to restore")
     ] = None,
@@ -33,7 +58,10 @@ def bootstrap(
     ] = None,
     aws_profile: Annotated[str | None, typer.Option(help="AWS profile to use")] = None,
 ):
-    client = hvac.Client(url=addr)
+    if ctx.get_parameter_source("vault_address") == ParameterSource.COMMANDLINE:
+        os.environ["VAULT_ADDR"] = vault_address
+
+    client = hvac.Client(verify=vault_ca_cert or vault_ca_path or not vault_skip_verify)
 
     if not client.sys.is_initialized():
         typer.echo("Vault is not initialized. Starting initialization sequence...")
@@ -80,14 +108,18 @@ def bootstrap(
         typer.echo("Vault is unsealed and ready. Starting restore...")
 
         restore_raft_snapshot(
-            addr=addr,
-            s3_bucket=s3_bucket,
-            s3_prefix=s3_prefix,
+            ctx=ctx,
+            vault_address=vault_address,
+            vault_ca_cert=vault_ca_cert,
+            vault_ca_path=vault_ca_path,
+            vault_skip_verify=vault_skip_verify,
+            s3_bucket_name=s3_bucket_name,
+            s3_key_prefix=s3_key_prefix,
             filename=filename,
             filename_regex=filename_regex,
             aws_profile=aws_profile,
             force_restore=True,
-            token=root_token,
+            vault_token=root_token,
         )
     else:
         typer.echo("Vault already initialized. Skipping bootstrap procedure.")

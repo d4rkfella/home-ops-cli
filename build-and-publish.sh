@@ -4,10 +4,10 @@ set -e
 echo "🧹 Cleaning old builds..."
 rm -rf dist/ build/ *.egg-info
 
-echo "📦 Building package..."
-python -m build
+echo "📦 Building package with Poetry..."
+poetry build
 
-echo "🔍 Checking package with twine..."
+echo "🔍 Checking package..."
 python -m twine check dist/*
 
 if [ -z "$TWINE_PASSWORD" ]; then

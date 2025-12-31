@@ -1,12 +1,16 @@
+import os
 from typing import Any
 
 import hvac
 import typer
+from click.core import ParameterSource
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from hvac.exceptions import InvalidPath, InvalidRequest, VaultError
 from requests import Response
 from typing_extensions import Annotated
+
+from ...utils import handle_vault_authentication
 
 app = typer.Typer()
 
@@ -21,61 +25,72 @@ def to_dict(resp: dict[str, Any] | Response | None) -> dict[str, Any]:
 
 @app.command()
 def rotate_issuing(
-    vault_addr: Annotated[
+    ctx: typer.Context,
+    vault_address: Annotated[
         str | None,
         typer.Option(
-            "--vault-addr",
-            "-a",
             envvar="VAULT_ADDR",
             help="Vault URL (e.g., https://vault.example.com:8200)",
-            prompt=True,
         ),
     ] = None,
-    token: Annotated[
+    vault_token: Annotated[
         str | None,
         typer.Option(
-            "--token",
-            "-t",
             envvar="VAULT_TOKEN",
             help="Vault token. If omitted, username/password login will be used.",
-            prompt=True,
-            prompt_required=False,
         ),
     ] = None,
+    vault_ca_cert: Annotated[
+        str | None,
+        typer.Option(
+            envvar="VAULT_CACERT",
+            help="Path to Vault CA certificate.",
+        ),
+    ] = None,
+    vault_ca_path: Annotated[
+        str | None,
+        typer.Option(
+            envvar="VAULT_CAPATH",
+            help="Path to directory of Vault CA certificates.",
+        ),
+    ] = None,
+    vault_skip_verify: Annotated[
+        bool,
+        typer.Option(
+            envvar="VAULT_SKIP_VERIFY", help="Skip Vault TLS certificate verification."
+        ),
+    ] = False,
 ):
     ISS_MOUNT = "pki_iss"
     INT_MOUNT = "pki_int"
     COMMON_NAME = "DarkfellaNET Issuing CA v1.1.1"
     TTL = "8760h"
 
-    client = hvac.Client(url=vault_addr)
+    if (
+        vault_address
+        and ctx.get_parameter_source("vault_address") == ParameterSource.COMMANDLINE
+    ):
+        os.environ["VAULT_ADDR"] = vault_address
 
-    if token:
-        client.token = token
-    else:
-        typer.echo("Vault token not found, logging in with username/password.")
-        username = typer.prompt("Vault username")
-        password = typer.prompt("Vault password", hide_input=True)
-        try:
-            login_resp = client.auth.userpass.login(
-                username=username, password=password
-            )
-            client.token = login_resp["auth"]["client_token"]
-            typer.echo("Logged in successfully.")
-        except InvalidRequest as e:
-            typer.echo(f"Vault login failed: {e}")
-            raise typer.Exit(1)
+    if (
+        vault_token
+        and ctx.get_parameter_source("vault_token") == ParameterSource.COMMANDLINE
+    ):
+        os.environ["VAULT_TOKEN"] = vault_token
 
-    if not client.is_authenticated():
-        typer.echo("Authentication to Vault failed.")
-        raise typer.Exit(1)
+    vault_client = handle_vault_authentication(
+        hvac.Client(verify=vault_ca_cert or vault_ca_path or not vault_skip_verify),
+        vault_token=vault_token,
+    )
 
-    typer.echo(f"Connected to Vault at {vault_addr}")
+    if vault_client.sys.is_sealed():
+        typer.secho("Vault is sealed. Cannot proceed..", fg=typer.colors.RED, bold=True)
+        raise typer.Exit(code=1)
 
     try:
         typer.echo("Generating CSR using existing key material...")
         generate_resp = to_dict(
-            client.write(
+            vault_client.write(
                 f"{ISS_MOUNT}/issuers/generate/intermediate/existing",
                 common_name=COMMON_NAME,
                 country="Bulgaria",
@@ -94,7 +109,7 @@ def rotate_issuing(
     try:
         typer.echo("Signing CSR with intermediate CA...")
         sign_resp = to_dict(
-            client.write(
+            vault_client.write(
                 f"{INT_MOUNT}/root/sign-intermediate",
                 csr=csr,
                 country="Bulgaria",
@@ -114,7 +129,7 @@ def rotate_issuing(
     try:
         typer.echo(f"Importing signed certificate back into {ISS_MOUNT}...")
         import_resp = to_dict(
-            client.write(
+            vault_client.write(
                 f"{ISS_MOUNT}/intermediate/set-signed",
                 certificate=signed_cert,
                 wrap_ttl=None,
@@ -125,7 +140,7 @@ def rotate_issuing(
             raise RuntimeError("Vault did not return an imported issuer ID!")
         new_issuer_id = imported_issuers[0]
 
-        client.write(
+        vault_client.write(
             f"{ISS_MOUNT}/config/issuers", default=new_issuer_id, wrap_ttl=None
         )
         typer.echo(f"New issuer {new_issuer_id} set as default")

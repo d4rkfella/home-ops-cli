@@ -252,8 +252,8 @@ def validate_github_token(value: str) -> str:
 def handle_vault_authentication(
     client: hvac.Client,
     vault_token: str | None,
-    k8s_role: str | None,
-    k8s_mount_point: str,
+    k8s_role: str | None = None,
+    k8s_mount_point: str = "kubernetes",
     k8s_token_path: Path = Path("/var/run/secrets/kubernetes.io/serviceaccount/token"),
 ) -> hvac.Client:
     TOKEN_FILEPATH = Path.home() / ".vault-token"

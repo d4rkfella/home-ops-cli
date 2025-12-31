@@ -1,8 +1,10 @@
+import os
 from pathlib import Path
 from typing import Annotated
 
 import hvac
 import typer
+from click.core import ParameterSource
 from rich.console import Console
 from rich.table import Table
 
@@ -20,10 +22,31 @@ app = typer.Typer()
 
 @app.command(help="Authenticate with Vault and optionally save the token.")
 def login(
-    addr: Annotated[
+    ctx: typer.Context,
+    vault_address: Annotated[
         str,
         typer.Option(help="Vault address (or set VAULT_ADDR)", envvar="VAULT_ADDR"),
     ],
+    vault_ca_cert: Annotated[
+        str | None,
+        typer.Option(
+            envvar="VAULT_CACERT",
+            help="Path to Vault CA certificate.",
+        ),
+    ] = None,
+    vault_ca_path: Annotated[
+        str | None,
+        typer.Option(
+            envvar="VAULT_CAPATH",
+            help="Path to directory of Vault CA certificates.",
+        ),
+    ] = None,
+    vault_skip_verify: Annotated[
+        bool,
+        typer.Option(
+            envvar="VAULT_SKIP_VERIFY", help="Skip Vault TLS certificate verification."
+        ),
+    ] = False,
     method: Annotated[
         str, typer.Option(help="Auth method: token (default) or userpass")
     ] = "token",
@@ -37,6 +60,8 @@ def login(
         ),
     ] = [],
 ):
+    if ctx.get_parameter_source("vault_address") == ParameterSource.COMMANDLINE:
+        os.environ["VAULT_ADDR"] = vault_address
     kv = {}
     for p in params:
         if "=" not in p:
@@ -44,7 +69,7 @@ def login(
         k, v = p.split("=", 1)
         kv[k] = v
 
-    client = hvac.Client(url=addr)
+    client = hvac.Client(verify=vault_ca_cert or vault_ca_path or not vault_skip_verify)
 
     try:
         if method == "token":
