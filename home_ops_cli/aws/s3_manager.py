@@ -672,13 +672,25 @@ class ConfirmDeleteScreen(ModalScreen[bool]):
     ]
 
     def __init__(
-        self, bucket: str, key: str | None = None, prefix: str | None = None, **kwargs
+        self,
+        bucket: str,
+        key: str | None = None,
+        prefix: str | None = None,
+        delete_bucket: bool = False,
+        **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         self.bucket = bucket
-        self.prefix = prefix
         self.key = key
-        self.objects_to_delete: list[str] = []
+        self.prefix = prefix
+        self.delete_bucket = delete_bucket
+        self.objects_to_delete: list[str]
+
+        num_set = sum(bool(x) for x in (self.key, self.prefix, self.delete_bucket))
+        if num_set != 1:
+            raise ValueError(
+                "Exactly one of `key`, `prefix`, or `delete_bucket` must be set."
+            )
 
     def compose(self) -> ComposeResult:
         yield Markdown(None)
@@ -695,16 +707,26 @@ class ConfirmDeleteScreen(ModalScreen[bool]):
             paginator = s3.get_paginator("list_objects_v2")
             self.objects_to_delete = []
 
-            if self.prefix:
+            if self.key:
+                self.objects_to_delete = [self.key]
+
+            elif self.prefix:
                 for page in paginator.paginate(Bucket=self.bucket, Prefix=self.prefix):
                     self.objects_to_delete.extend(
                         cast(str, obj.get("Key")) for obj in page.get("Contents", [])
                     )
-                count_msg = (
-                    "No objects found."
-                    if not self.objects_to_delete
-                    else f"{len(self.objects_to_delete)} object(s) will be deleted."
-                )
+
+            elif self.delete_bucket:
+                for page in paginator.paginate(Bucket=self.bucket):
+                    self.objects_to_delete.extend(
+                        cast(str, obj.get("Key")) for obj in page.get("Contents", [])
+                    )
+
+            count_msg = (
+                "No objects found."
+                if not self.objects_to_delete
+                else f"{len(self.objects_to_delete)} object(s) will be deleted."
+            )
 
             if self.key:
                 markdown_text = (
@@ -715,17 +737,19 @@ class ConfirmDeleteScreen(ModalScreen[bool]):
                     "---\n\n"
                     "Press **y** to confirm, **n** to cancel."
                 )
-            elif self.prefix != "":
+                self.app.call_from_thread(markdown_widget.update, markdown_text)
+            elif self.prefix:
                 markdown_text = (
                     f"# ⚠️ Delete Objects\n\n"
                     f"**Bucket:** `{self.bucket}`  \n"
                     f"**Prefix:** `{self.prefix}`\n\n"
                     f"{count_msg}\n\n"
-                    f"This action will permanently delete all objects located under `{self.prefix}`.\n\n"
+                    f"This action will permanently delete all objects under `{self.prefix}`.\n\n"
                     "---\n\n"
                     "Press **y** to confirm, **n** to cancel, or **d** for dry run."
                 )
-            elif self.bucket_delete:
+                self.app.call_from_thread(markdown_widget.update, markdown_text)
+            elif self.delete_bucket:
                 markdown_text = (
                     f"# ⚠️ Delete Bucket\n\n"
                     f"**Bucket:** `{self.bucket}`\n\n"
@@ -734,12 +758,11 @@ class ConfirmDeleteScreen(ModalScreen[bool]):
                     "---\n\n"
                     "Press **y** to confirm, **n** to cancel, or **d** for dry run."
                 )
-
-            self.app.call_from_thread(markdown_widget.update, markdown_text)
+                self.app.call_from_thread(markdown_widget.update, markdown_text)
 
         except Exception as e:
             self.app.call_from_thread(
-                self.app.notify, f"Error counting objects: {e}  ", severity="error"
+                self.app.notify, f"Error counting objects: {e}", severity="error"
             )
             self.app.call_from_thread(markdown_widget.update, f"Error: {e}")
 

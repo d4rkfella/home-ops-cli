@@ -33,27 +33,27 @@ RESOURCE_TYPES = {
     "crd": {
         "kind": "CustomResourceDefinition",
         "api_version": "apiextensions.k8s.io/v1",
-        "needs_namespace": False,
+        "namespaced": False,
         "readiness": lambda obj: True,
     },
     "deployment": {
         "kind": "Deployment",
         "api_version": "apps/v1",
-        "needs_namespace": True,
+        "namespaced": True,
         "readiness": lambda obj: (getattr(obj.status, "readyReplicas", 0) or 0)
         >= (getattr(obj.spec, "replicas", 0) or 0),
     },
     "daemonset": {
         "kind": "DaemonSet",
         "api_version": "apps/v1",
-        "needs_namespace": True,
+        "namespaced": True,
         "readiness": lambda obj: (getattr(obj.status, "numberReady", 0) or 0)
         >= (getattr(obj.status, "desiredNumberScheduled", 0) or 0),
     },
     "statefulset": {
         "kind": "StatefulSet",
         "api_version": "apps/v1",
-        "needs_namespace": True,
+        "namespaced": True,
         "readiness": lambda obj: (getattr(obj.status, "readyReplicas", 0) or 0)
         >= (getattr(obj.spec, "replicas", 0) or 0),
     },
@@ -79,10 +79,10 @@ def parse_resource(arg: str) -> set[ResourceSpec]:
 
     info = RESOURCE_TYPES[rtype]
 
-    if namespace and not info["needs_namespace"]:
+    if namespace and not info["namespaced"]:
         raise typer.BadParameter(f"Resource {rtype} should not have a namespace")
 
-    if info["needs_namespace"] and not namespace:
+    if info["namespaced"] and not namespace:
         raise typer.BadParameter(f"Resource {rtype} requires a namespace")
 
     return {
@@ -165,7 +165,7 @@ app = typer.Typer()
         "A readiness check is performed for each resource based on its type:\n\n"
         "• Deployments and StatefulSets are considered ready when all replicas are available.\n"
         "• DaemonSets are ready when all scheduled pods are available.\n"
-        "• CRDs are considered ready immediately (existence only).\n\n"
+        "• CRDs are checked for existence only.\n\n"
         "Resources must be specified in the form type/name[@namespace], e.g.:\n"
         "  deployment/my-app@default\n"
         "  crd/mycrd\n\n"

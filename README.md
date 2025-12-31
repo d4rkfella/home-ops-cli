@@ -1,0 +1,1 @@
+A command-line interface tool designed to streamline and automate various home operations tasks.

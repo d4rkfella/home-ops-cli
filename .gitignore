@@ -2,5 +2,5 @@ __pycache__/
 *.py[cod]
 *$py.class
 .venv/
-.mypy_cache
-.pytest_cache/
+dist
+.*_cache

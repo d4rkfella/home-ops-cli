@@ -98,16 +98,16 @@ def verify_internal_checksums(snapshot_data: bytes):
     help="Executes a complete workflow for obtaining a HashiCorp Vault Raft snapshot from a cluster, verifying its integrity, and uploading it securely to S3 storage. Provides flexible authentication options for both HashiCorp Vault and S3 APIs."
 )
 def backup_raft_snapshot(
-    bucket_name: Annotated[
+    s3_bucket_name: Annotated[
         str, typer.Option(envvar="S3_BUCKET_NAME", help="Target S3 bucket name.")
     ],
-    vault_url: Annotated[
+    vault_address: Annotated[
         str, typer.Option(envvar="VAULT_ADDR", help="Vault server address.")
     ],
-    k8s_role: Annotated[
+    vault_k8s_role: Annotated[
         str | None, typer.Option(envvar="VAULT_K8S_ROLE", help="Vault K8s role name.")
     ] = None,
-    k8s_mount_point: Annotated[
+    vault_k8s_mount_point: Annotated[
         str,
         typer.Option(
             envvar="VAULT_K8S_MOUNT_POINT", help="K8s auth backend mount path."
@@ -147,7 +147,7 @@ def backup_raft_snapshot(
             envvar="AWS_REGION", help="Official AWS Region (e.g., us-east-1)."
         ),
     ] = "us-east-1",
-    key_prefix: Annotated[
+    s3_key_prefix: Annotated[
         str,
         typer.Option(help="The S3 key prefix (folder) to store the snapshot in."),
     ] = "",
@@ -156,7 +156,7 @@ def backup_raft_snapshot(
         typer.Option(help="The algorithm to use for s3 transport checksum."),
     ] = S3ChecksumAlgorithm.CRC64NVME,
 ):
-    if k8s_role and vault_token:
+    if vault_k8s_role and vault_token:
         typer.secho(
             "Warning: Both a K8s role and a Vault token were provided. Kubernetes authentication will be prioritized.",
             fg=typer.colors.YELLOW,
@@ -164,11 +164,11 @@ def backup_raft_snapshot(
         )
 
     vault_client = handle_vault_authentication(
-        hvac.Client(),
-        vault_url=vault_url,
+        hvac.Client(url=vault_address),
+        vault_url=vault_address,
         vault_token=vault_token,
-        k8s_role=k8s_role,
-        k8s_mount_point=k8s_mount_point,
+        k8s_role=vault_k8s_role,
+        k8s_mount_point=vault_k8s_mount_point,
     )
 
     if vault_client.sys.is_sealed():
@@ -219,16 +219,16 @@ def backup_raft_snapshot(
         verify_internal_checksums(snapshot_data)
 
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        s3_key = f"{key_prefix}vault-snapshot-{timestamp}.snap"
+        s3_key = f"{s3_key_prefix}vault-snapshot-{timestamp}.snap"
 
         typer.echo(
-            f"Uploading snapshot to bucket '{bucket_name}' with key '{s3_key}'..."
+            f"Uploading snapshot to bucket '{s3_bucket_name}' with key '{s3_key}'..."
         )
 
         try:
             s3_client.upload_fileobj(
                 io.BytesIO(snapshot_data),
-                bucket_name,
+                s3_bucket_name,
                 s3_key,
                 ExtraArgs={
                     "ContentType": "application/gzip",

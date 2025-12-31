@@ -255,23 +255,27 @@ def handle_vault_authentication(
     vault_token: str | None,
     k8s_role: str | None,
     k8s_mount_point: str,
+    k8s_token_path: Path = Path("/var/run/secrets/kubernetes.io/serviceaccount/token"),
 ) -> hvac.Client:
-    K8S_JWT_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
     TOKEN_FILEPATH = Path.home() / ".vault-token"
     typer.echo(f"Connecting to Vault at: {vault_url}...")
+
+    if vault_token:
+        client.token = vault_token
+        return client
+
     if k8s_role:
         typer.echo(f"Attempting Kubernetes Auth for role: {k8s_role}...")
 
-        if not os.path.exists(K8S_JWT_PATH):
+        if not k8s_token_path.exists():
             typer.secho(
-                f"K8s JWT file not found at {K8S_JWT_PATH}. Cannot proceed with K8s Auth.",
+                f"K8s token file not found at {k8s_token_path}. Cannot proceed with K8s Auth.",
                 fg=typer.colors.RED,
                 bold=True,
             )
             raise typer.Exit(code=1)
 
-        with open(K8S_JWT_PATH, "r") as f:
-            jwt = f.read().strip()
+        jwt = k8s_token_path.read_text().strip()
 
         try:
             client.auth.kubernetes.login(
@@ -282,20 +286,15 @@ def handle_vault_authentication(
         except (InvalidRequest, VaultError) as e:
             typer.secho(f"Kubernetes Auth Failed: {e}", fg=typer.colors.RED, bold=True)
             raise typer.Exit(code=1)
-        except Exception as e:
-            typer.secho(
-                f"Unexpected Error during Kubernetes Auth: {e}",
-                fg=typer.colors.RED,
-                bold=True,
-            )
-            raise typer.Exit(code=1)
-
-    if vault_token:
-        client.token = vault_token
-        return client
 
     if TOKEN_FILEPATH.exists():
-        saved_token = TOKEN_FILEPATH.read_text().strip()
-        if saved_token:
+        if saved_token := TOKEN_FILEPATH.read_text().strip():
             client.token = saved_token
             return client
+
+    typer.secho(
+        "No valid Vault authentication method found.",
+        fg=typer.colors.RED,
+        bold=True,
+    )
+    raise typer.Exit(code=1)

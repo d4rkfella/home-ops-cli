@@ -8,8 +8,8 @@ import botocore.exceptions
 import hvac
 import typer
 from hvac.api.system_backend import Raft
-from hvac.exceptions import InvalidRequest, VaultError
 from typing_extensions import Annotated
+from ..utils import handle_vault_authentication
 
 from ..utils import parse_regex
 
@@ -62,14 +62,25 @@ def select_snapshot(
 
 @app.command(help="Restore a HashiCorp Vault cluster from an S3 Raft snapshot.")
 def restore_raft_snapshot(
-    addr: Annotated[
+    vault_address: Annotated[
         str,
         typer.Option(help="Vault address (or set VAULT_ADDR)", envvar="VAULT_ADDR"),
     ],
-    s3_bucket: Annotated[
-        str, typer.Option(help="S3 bucket where snapshots are stored")
+    s3_bucket_name: Annotated[
+        str,
+        typer.Option(
+            envvar="S3_BUCKET_NAME", help="S3 bucket where snapshots are stored"
+        ),
     ],
-    s3_prefix: Annotated[str, typer.Option(help="S3 prefix/folder for snapshots")] = "",
+    vault_k8s_role: Annotated[
+        str | None, typer.Option(envvar="VAULT_K8S_ROLE", help="Vault K8s role name.")
+    ] = None,
+    vault_k8s_mount_point: Annotated[
+        str,
+        typer.Option(
+            envvar="VAULT_K8S_MOUNT_POINT", help="K8s auth backend mount path."
+        ),
+    ] = "kubernetes",
     filename: Annotated[
         str | None, typer.Option(help="Specific snapshot file to restore")
     ] = None,
@@ -77,98 +88,118 @@ def restore_raft_snapshot(
         re.Pattern | None,
         typer.Option(parser=parse_regex, help="Regex to match snapshot filenames"),
     ] = None,
-    aws_profile: Annotated[str | None, typer.Option(help="AWS profile to use")] = None,
+    aws_profile: Annotated[
+        str | None,
+        typer.Option(
+            envvar="AWS_PROFILE", help="AWS Profile name to use for authentication."
+        ),
+    ] = None,
+    aws_access_key_id: Annotated[
+        str | None,
+        typer.Option(envvar="AWS_ACCESS_KEY_ID", help="AWS Access Key ID."),
+    ] = None,
+    aws_secret_access_key: Annotated[
+        str | None,
+        typer.Option(
+            envvar="AWS_SECRET_ACCESS_KEY",
+            help="AWS Secret Access Key.",
+        ),
+    ] = None,
+    s3_endpoint_url: Annotated[
+        str | None,
+        typer.Option(
+            envvar="S3_ENDPOINT_URL",
+            help="Custom S3 endpoint URL (e.g., for MinIO or Cloudflare R2).",
+        ),
+    ] = None,
+    aws_region: Annotated[
+        str,
+        typer.Option(
+            envvar="AWS_REGION", help="Official AWS Region (e.g., us-east-1)."
+        ),
+    ] = "us-east-1",
+    s3_key_prefix: Annotated[
+        str,
+        typer.Option(help="The S3 key prefix (folder) where the snapshot is stored."),
+    ] = "",
     force_restore: Annotated[
         bool, typer.Option(help="Force restore snapshot, replacing existing data")
     ] = False,
-    token: Annotated[
+    vault_token: Annotated[
         str | None, typer.Option(help="Vault token to authenticate with")
-    ] = None,
-    username: Annotated[
-        str | None, typer.Option(help="Vault username for authentication")
-    ] = None,
-    password: Annotated[
-        str | None,
-        typer.Option(help="Vault password for authentication", hide_input=True),
     ] = None,
 ):
     if filename and filename_regex:
-        raise typer.BadParameter(
-            "snapshot_file and filename_regex are mutually exclusive"
+        raise typer.BadParameter("filename and filename-regex are mutually exclusive")
+
+    vault_client = handle_vault_authentication(
+        hvac.Client(url=vault_address),
+        vault_url=vault_address,
+        vault_token=vault_token,
+        k8s_role=vault_k8s_role,
+        k8s_mount_point=vault_k8s_mount_point,
+    )
+
+    if vault_client.sys.is_sealed():
+        typer.secho("Vault is sealed. Cannot proceed..", fg=typer.colors.RED, bold=True)
+        raise typer.Exit(code=1)
+
+    typer.echo("Initializing S3 client...")
+
+    session_kwargs = {}
+    client_kwargs = {}
+
+    if aws_access_key_id and aws_secret_access_key:
+        session_kwargs["aws_access_key_id"] = aws_access_key_id
+        session_kwargs["aws_secret_access_key"] = aws_secret_access_key
+        if s3_endpoint_url:
+            client_kwargs["endpoint_url"] = s3_endpoint_url
+
+    elif aws_profile:
+        typer.echo(f"Using AWS profile: {aws_profile}")
+        session_kwargs["profile_name"] = aws_profile
+
+    else:
+        typer.echo(
+            "Using Boto3's default credential chain (IAM Role, standard ENV VARs, or shared files)."
         )
 
-    client = hvac.Client(url=addr)
-    try:
-        if token:
-            client.token = token
-        elif username and password:
-            try:
-                auth_resp = client.auth.userpass.login(
-                    username=username, password=password
-                )
-                client.token = auth_resp["auth"]["client_token"]
-            except InvalidRequest as e:
-                safe_msg = str(e)
-                typer.echo(
-                    f"Vault authentication failed for user '{username}': {safe_msg}",
-                    err=True,
-                )
-                raise typer.Exit(code=1)
-            except VaultError as e:
-                typer.echo(
-                    f"Vault authentication failed for user '{username}': {e.__class__.__name__}",
-                    err=True,
-                )
-                raise typer.Exit(code=1)
-        else:
-            raise typer.BadParameter(
-                "You must provide either a Vault token or username/password to authenticate."
-            )
-    except Exception as e:
-        typer.echo(f"Vault authentication unexpected error: {e}", err=True)
-        raise typer.Exit(code=1)
-
-    if not client.is_authenticated():
-        typer.echo("Vault login failed!", err=True)
-        raise typer.Exit(code=1)
-
-    typer.echo("Vault authentication successful.")
-
-    session = (
-        boto3.Session(profile_name=aws_profile) if aws_profile else boto3.Session()
-    )
-    s3_client = session.client("s3")
+    session = boto3.Session(**session_kwargs)
+    s3_client = session.client("s3", region_name=aws_region, **client_kwargs)
+    typer.echo("S3 client initialized.")
 
     if filename:
-        key = f"{s3_prefix}/{filename}" if s3_prefix else filename
+        key = f"{s3_key_prefix}/{filename}" if s3_key_prefix else filename
         try:
-            s3_client.head_object(Bucket=s3_bucket, Key=key)
+            s3_client.head_object(Bucket=s3_bucket_name, Key=key)
         except botocore.exceptions.ClientError as e:
             error_info = e.response.get("Error", {})
             code = error_info.get("Code", "Unknown")
             msg = error_info.get("Message", "")
             typer.secho(
-                f"Failed to access S3 object {key} in bucket {s3_bucket}: [{code}] {msg}",
+                f"Failed to access S3 object {key} in bucket {s3_bucket_name}: [{code}] {msg}",
                 err=True,
             )
             raise typer.Exit(code=1)
         typer.echo(f"Selected user-provided snapshot: {key}")
     else:
         try:
-            resp = s3_client.list_objects_v2(Bucket=s3_bucket, Prefix=s3_prefix)
+            resp = s3_client.list_objects_v2(
+                Bucket=s3_bucket_name, Prefix=s3_key_prefix
+            )
         except botocore.exceptions.ClientError as e:
             error_info = e.response.get("Error", {})
             code = error_info.get("Code", "Unknown")
             msg = error_info.get("Message", "")
             typer.secho(
-                f"Failed to list S3 objects in bucket {s3_bucket}: [{code}]: {msg}",
+                f"Failed to list S3 objects in bucket {s3_bucket_name}: [{code}]: {msg}",
                 err=True,
             )
             raise typer.Exit(code=1)
 
         contents = cast(Sequence[Mapping[str, object]], resp.get("Contents", []))
         if not contents:
-            typer.secho(f"No snapshots found in s3://{s3_bucket}/{s3_prefix}")
+            typer.secho(f"No snapshots found in s3://{s3_bucket_name}/{s3_key_prefix}")
             raise typer.Exit(code=0)
 
         key = select_snapshot(contents, filename_regex=filename_regex)
@@ -176,7 +207,7 @@ def restore_raft_snapshot(
 
         try:
             if not (
-                snapshot_bytes := s3_client.get_object(Bucket=s3_bucket, Key=key)[
+                snapshot_bytes := s3_client.get_object(Bucket=s3_bucket_name, Key=key)[
                     "Body"
                 ].read()
             ):
@@ -185,7 +216,7 @@ def restore_raft_snapshot(
 
             typer.echo("Restoring snapshot via Raft API...")
             try:
-                raft = Raft(client.adapter)
+                raft = Raft(vault_client.adapter)
                 if force_restore:
                     resp = raft.force_restore_raft_snapshot(snapshot_bytes)
                 else:
@@ -206,7 +237,7 @@ def restore_raft_snapshot(
             code = error_info.get("Code", "Unknown")
             msg = error_info.get("Message", "")
             typer.secho(
-                f"Failed to download snapshot {key} from bucket {s3_bucket}: [{code}] {msg}",
+                f"Failed to download snapshot {key} from bucket {s3_bucket_name}: [{code}] {msg}",
                 err=True,
             )
             raise typer.Exit(code=1)
