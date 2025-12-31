@@ -1,15 +1,15 @@
 import asyncio
+import os
 import random
 import re
 import time
-import os
 from contextlib import asynccontextmanager
 from functools import wraps
-from typing import Any, Literal, overload
 from pathlib import Path
-import hvac
+from typing import Any, Literal, overload
 
 import aiohttp
+import hvac
 import typer
 from hvac.exceptions import InvalidRequest, VaultError
 from kubernetes_asyncio import client, config  # type: ignore
@@ -251,18 +251,20 @@ def validate_github_token(value: str) -> str:
 
 def handle_vault_authentication(
     client: hvac.Client,
-    vault_url: str,
     vault_token: str | None,
     k8s_role: str | None,
     k8s_mount_point: str,
     k8s_token_path: Path = Path("/var/run/secrets/kubernetes.io/serviceaccount/token"),
 ) -> hvac.Client:
     TOKEN_FILEPATH = Path.home() / ".vault-token"
-    typer.echo(f"Connecting to Vault at: {vault_url}...")
 
     if vault_token:
-        client.token = vault_token
         return client
+
+    if TOKEN_FILEPATH.exists():
+        if saved_token := TOKEN_FILEPATH.read_text().strip():
+            client.token = saved_token
+            return client
 
     if k8s_role:
         typer.echo(f"Attempting Kubernetes Auth for role: {k8s_role}...")
@@ -286,11 +288,6 @@ def handle_vault_authentication(
         except (InvalidRequest, VaultError) as e:
             typer.secho(f"Kubernetes Auth Failed: {e}", fg=typer.colors.RED, bold=True)
             raise typer.Exit(code=1)
-
-    if TOKEN_FILEPATH.exists():
-        if saved_token := TOKEN_FILEPATH.read_text().strip():
-            client.token = saved_token
-            return client
 
     typer.secho(
         "No valid Vault authentication method found.",

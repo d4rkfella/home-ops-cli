@@ -1,9 +1,9 @@
 import re
+import time
 
 import hvac
-from hvac.exceptions import InvalidRequest
 import typer
-import time
+from hvac.exceptions import InvalidRequest
 from typing_extensions import Annotated
 
 from ..utils import parse_regex

@@ -275,7 +275,7 @@ class BucketSelectScreen(Screen):
 
         bucket_name = item.name
         result = await self.app.push_screen_wait(
-            ConfirmDeleteScreen(bucket=bucket_name, bucket_delete=True)
+            ConfirmDeleteScreen(bucket=bucket_name, delete_bucket=True)
         )
         if result is True:
             self.delete_bucket(bucket_name)

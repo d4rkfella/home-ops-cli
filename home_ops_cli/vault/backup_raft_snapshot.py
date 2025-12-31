@@ -1,15 +1,18 @@
-import io
 import datetime
-import typer
 import hashlib
+import io
+import os
 import tarfile
-import boto3
 from enum import Enum
 from typing import Annotated
-import hvac
-from requests import Response
-from ..utils import handle_vault_authentication
 
+import boto3
+import hvac
+import typer
+from click.core import ParameterSource
+from requests import Response
+
+from ..utils import handle_vault_authentication
 
 app = typer.Typer()
 
@@ -98,6 +101,7 @@ def verify_internal_checksums(snapshot_data: bytes):
     help="Executes a complete workflow for obtaining a HashiCorp Vault Raft snapshot from a cluster, verifying its integrity, and uploading it securely to S3 storage. Provides flexible authentication options for both HashiCorp Vault and S3 APIs."
 )
 def backup_raft_snapshot(
+    ctx: typer.Context,
     s3_bucket_name: Annotated[
         str, typer.Option(envvar="S3_BUCKET_NAME", help="Target S3 bucket name.")
     ],
@@ -117,6 +121,26 @@ def backup_raft_snapshot(
         str | None,
         typer.Option(envvar="VAULT_TOKEN", help="Vault authentication token."),
     ] = None,
+    vault_ca_cert: Annotated[
+        str | None,
+        typer.Option(
+            envvar="VAULT_CACERT",
+            help="Path to Vault CA certificate.",
+        ),
+    ] = None,
+    vault_ca_path: Annotated[
+        str | None,
+        typer.Option(
+            envvar="VAULT_CAPATH",
+            help="Path to directory of Vault CA certificates.",
+        ),
+    ] = None,
+    vault_skip_verify: Annotated[
+        bool,
+        typer.Option(
+            envvar="VAULT_SKIP_VERIFY", help="Skip Vault TLS certificate verification."
+        ),
+    ] = False,
     aws_profile: Annotated[
         str | None,
         typer.Option(
@@ -134,11 +158,11 @@ def backup_raft_snapshot(
             help="AWS Secret Access Key.",
         ),
     ] = None,
-    s3_endpoint_url: Annotated[
+    aws_endpoint_url: Annotated[
         str | None,
         typer.Option(
-            envvar="S3_ENDPOINT_URL",
-            help="Custom S3 endpoint URL (e.g., for MinIO or Cloudflare R2).",
+            envvar="AWS_ENDPOINT_URL",
+            help="Custom AWS endpoint URL (e.g., for MinIO or Cloudflare R2).",
         ),
     ] = None,
     aws_region: Annotated[
@@ -156,16 +180,31 @@ def backup_raft_snapshot(
         typer.Option(help="The algorithm to use for s3 transport checksum."),
     ] = S3ChecksumAlgorithm.CRC64NVME,
 ):
-    if vault_k8s_role and vault_token:
-        typer.secho(
-            "Warning: Both a K8s role and a Vault token were provided. Kubernetes authentication will be prioritized.",
-            fg=typer.colors.YELLOW,
-            bold=True,
-        )
+    if ctx.get_parameter_source("aws_endpoint_url") == ParameterSource.COMMANDLINE:
+        os.environ["AWS_ENDPOINT_URL"] = aws_endpoint_url
+
+    if ctx.get_parameter_source("vault_address") == ParameterSource.COMMANDLINE:
+        os.environ["VAULT_ADDR"] = vault_address
+
+    if ctx.get_parameter_source("vault_token") == ParameterSource.COMMANDLINE:
+        os.environ["VAULT_TOKEN"] = vault_token
+
+    if ctx.get_parameter_source("aws_profile") == ParameterSource.COMMANDLINE:
+        os.environ["AWS_PROFILE"] = aws_profile
+
+    if (
+        ctx.get_parameter_source("aws_access_key_id") == ParameterSource.COMMANDLINE
+        and ctx.get_parameter_source("aws_secret_access_key")
+        == ParameterSource.COMMANDLINE
+    ):
+        os.environ["AWS_ACCESS_KEY_ID"] = aws_access_key_id
+        os.environ["AWS_SECRET_ACCESS_KEY"] = aws_secret_access_key
+
+    if ctx.get_parameter_source("aws_region") == ParameterSource.COMMANDLINE:
+        os.environ["AWS_REGION"] = aws_region
 
     vault_client = handle_vault_authentication(
-        hvac.Client(url=vault_address),
-        vault_url=vault_address,
+        hvac.Client(verify=vault_ca_cert or vault_ca_path or not vault_skip_verify),
         vault_token=vault_token,
         k8s_role=vault_k8s_role,
         k8s_mount_point=vault_k8s_mount_point,
@@ -177,26 +216,8 @@ def backup_raft_snapshot(
 
     typer.echo("Initializing S3 client...")
 
-    session_kwargs = {}
-    client_kwargs = {}
-
-    if aws_access_key_id and aws_secret_access_key:
-        session_kwargs["aws_access_key_id"] = aws_access_key_id
-        session_kwargs["aws_secret_access_key"] = aws_secret_access_key
-        if s3_endpoint_url:
-            client_kwargs["endpoint_url"] = s3_endpoint_url
-
-    elif aws_profile:
-        typer.echo(f"Using AWS profile: {aws_profile}")
-        session_kwargs["profile_name"] = aws_profile
-
-    else:
-        typer.echo(
-            "Using Boto3's default credential chain (IAM Role, standard ENV VARs, or shared files)."
-        )
-
-    session = boto3.Session(**session_kwargs)
-    s3_client = session.client("s3", region_name=aws_region, **client_kwargs)
+    session = boto3.Session()
+    s3_client = session.client("s3")
     typer.echo("S3 client initialized.")
 
     try:

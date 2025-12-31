@@ -1,9 +1,10 @@
 from pathlib import Path
-import typer
 from typing import Annotated
+
 import hvac
-from rich.table import Table
+import typer
 from rich.console import Console
+from rich.table import Table
 
 
 def format_lease_duration(seconds: int) -> str:
