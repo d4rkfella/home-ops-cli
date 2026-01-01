@@ -1,12 +1,19 @@
 import os
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import hvac
 import typer
 from click.core import ParameterSource
 from rich.console import Console
 from rich.table import Table
+
+from ..options import (
+    VaultAddressOption,
+    VaultCACertOption,
+    VaultCAPathOption,
+    VaultSkipVerifyOption,
+)
 
 
 def format_lease_duration(seconds: int) -> str:
@@ -23,32 +30,13 @@ app = typer.Typer()
 @app.command(help="Authenticate with Vault and optionally save the token.")
 def login(
     ctx: typer.Context,
-    vault_address: Annotated[
-        str,
-        typer.Option(help="Vault address (or set VAULT_ADDR)", envvar="VAULT_ADDR"),
-    ],
-    vault_ca_cert: Annotated[
-        str | None,
-        typer.Option(
-            envvar="VAULT_CACERT",
-            help="Path to Vault CA certificate.",
-        ),
-    ] = None,
-    vault_ca_path: Annotated[
-        str | None,
-        typer.Option(
-            envvar="VAULT_CAPATH",
-            help="Path to directory of Vault CA certificates.",
-        ),
-    ] = None,
-    vault_skip_verify: Annotated[
-        bool,
-        typer.Option(
-            envvar="VAULT_SKIP_VERIFY", help="Skip Vault TLS certificate verification."
-        ),
-    ] = False,
+    vault_address: VaultAddressOption,
+    vault_ca_cert: VaultCACertOption = None,
+    vault_ca_path: VaultCAPathOption = None,
+    vault_skip_verify: VaultSkipVerifyOption = False,
     method: Annotated[
-        str, typer.Option(help="Auth method: token (default) or userpass")
+        Literal["token", "userpass"],
+        typer.Option(help="Auth method: token (default) or userpass"),
     ] = "token",
     no_store: Annotated[
         bool, typer.Option(help="Do not persist the token to disk", is_flag=True)
@@ -69,7 +57,9 @@ def login(
         k, v = p.split("=", 1)
         kv[k] = v
 
-    client = hvac.Client(verify=vault_ca_cert or vault_ca_path or not vault_skip_verify)
+    client = hvac.Client(
+        verify=str(vault_ca_cert) or str(vault_ca_path) or not vault_skip_verify
+    )
 
     try:
         if method == "token":
@@ -93,9 +83,6 @@ def login(
                 )
             auth_resp = client.auth.userpass.login(username=username, password=password)
             token_info = auth_resp["auth"]
-
-        else:
-            raise typer.BadParameter(f"Unknown method '{method}'")
 
         token = token_info.get("client_token") or token_info.get("id")
         accessor = token_info["accessor"]

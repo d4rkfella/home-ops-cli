@@ -11,9 +11,27 @@ import typer
 from click.core import ParameterSource
 from dateutil.parser import parse as parse_datetime
 from hvac.api.system_backend import Raft
-from typing_extensions import Annotated
 
-from ..utils import handle_vault_authentication, parse_regex
+from ..options import (
+    AwsAccessKeyIdOption,
+    AwsEndpointUrlOption,
+    AwsProfileOption,
+    AwsRegionOption,
+    AwsSecretAccessKeyOption,
+    S3BucketNameOption,
+    S3KeyPrefixOption,
+    VaultAddressOption,
+    VaultCACertOption,
+    VaultCAPathOption,
+    VaultK8sMountPointOption,
+    VaultK8sRoleOption,
+    VaultSkipVerifyOption,
+    VaultSnapshotForceRestoreOption,
+    VaultSnapshotNameOption,
+    VaultSnapshotNameRegexOption,
+    VaultTokenOption,
+)
+from ..utils import handle_vault_authentication
 
 app = typer.Typer()
 
@@ -65,92 +83,23 @@ def select_snapshot(
 @app.command(help="Restore a HashiCorp Vault cluster from an S3 Raft snapshot.")
 def restore_raft_snapshot(
     ctx: typer.Context,
-    vault_address: Annotated[
-        str,
-        typer.Option(help="Vault address (or set VAULT_ADDR)", envvar="VAULT_ADDR"),
-    ],
-    s3_bucket_name: Annotated[
-        str,
-        typer.Option(
-            envvar="S3_BUCKET_NAME", help="S3 bucket where snapshots are stored"
-        ),
-    ],
-    vault_k8s_role: Annotated[
-        str | None, typer.Option(envvar="VAULT_K8S_ROLE", help="Vault K8s role name.")
-    ] = None,
-    vault_k8s_mount_point: Annotated[
-        str,
-        typer.Option(
-            envvar="VAULT_K8S_MOUNT_POINT", help="K8s auth backend mount path."
-        ),
-    ] = "kubernetes",
-    filename: Annotated[
-        str | None, typer.Option(help="Specific snapshot file to restore")
-    ] = None,
-    filename_regex: Annotated[
-        re.Pattern | None,
-        typer.Option(parser=parse_regex, help="Regex to match snapshot filenames"),
-    ] = None,
-    aws_profile: Annotated[
-        str | None,
-        typer.Option(
-            envvar="AWS_PROFILE", help="AWS Profile name to use for authentication."
-        ),
-    ] = None,
-    aws_access_key_id: Annotated[
-        str | None,
-        typer.Option(envvar="AWS_ACCESS_KEY_ID", help="AWS Access Key ID."),
-    ] = None,
-    aws_secret_access_key: Annotated[
-        str | None,
-        typer.Option(
-            envvar="AWS_SECRET_ACCESS_KEY",
-            help="AWS Secret Access Key.",
-        ),
-    ] = None,
-    aws_endpoint_url: Annotated[
-        str | None,
-        typer.Option(
-            envvar="AWS_ENDPOINT_URL",
-            help="Custom AWS endpoint URL (e.g., for MinIO or Cloudflare R2).",
-        ),
-    ] = None,
-    aws_region: Annotated[
-        str,
-        typer.Option(
-            envvar="AWS_REGION", help="Official AWS Region (e.g., us-east-1)."
-        ),
-    ] = "us-east-1",
-    s3_key_prefix: Annotated[
-        str,
-        typer.Option(help="The S3 key prefix (folder) where the snapshot is stored."),
-    ] = "",
-    force_restore: Annotated[
-        bool, typer.Option(help="Force restore snapshot, replacing existing data")
-    ] = False,
-    vault_token: Annotated[
-        str | None, typer.Option(help="Vault token to authenticate with")
-    ] = None,
-    vault_ca_cert: Annotated[
-        str | None,
-        typer.Option(
-            envvar="VAULT_CACERT",
-            help="Path to Vault CA certificate.",
-        ),
-    ] = None,
-    vault_ca_path: Annotated[
-        str | None,
-        typer.Option(
-            envvar="VAULT_CAPATH",
-            help="Path to directory of Vault CA certificates.",
-        ),
-    ] = None,
-    vault_skip_verify: Annotated[
-        bool,
-        typer.Option(
-            envvar="VAULT_SKIP_VERIFY", help="Skip Vault TLS certificate verification."
-        ),
-    ] = False,
+    vault_address: VaultAddressOption,
+    s3_bucket_name: S3BucketNameOption,
+    vault_k8s_role: VaultK8sRoleOption = None,
+    vault_k8s_mount_point: VaultK8sMountPointOption = "kubernetes",
+    filename: VaultSnapshotNameOption = None,
+    filename_regex: VaultSnapshotNameRegexOption = None,
+    aws_profile: AwsProfileOption = None,
+    aws_access_key_id: AwsAccessKeyIdOption = None,
+    aws_secret_access_key: AwsSecretAccessKeyOption = None,
+    aws_endpoint_url: AwsEndpointUrlOption = None,
+    aws_region: AwsRegionOption = "us-east-1",
+    s3_key_prefix: S3KeyPrefixOption = "",
+    force_restore: VaultSnapshotForceRestoreOption = False,
+    vault_token: VaultTokenOption = None,
+    vault_ca_cert: VaultCACertOption = None,
+    vault_ca_path: VaultCAPathOption = None,
+    vault_skip_verify: VaultSkipVerifyOption = False,
 ):
     if filename and filename_regex:
         raise typer.BadParameter("filename and filename-regex are mutually exclusive")
@@ -193,7 +142,9 @@ def restore_raft_snapshot(
         os.environ["AWS_REGION"] = aws_region
 
     vault_client = handle_vault_authentication(
-        hvac.Client(verify=vault_ca_cert or vault_ca_path or not vault_skip_verify),
+        hvac.Client(
+            verify=str(vault_ca_cert) or str(vault_ca_path) or not vault_skip_verify
+        ),
         vault_token=vault_token,
         k8s_role=vault_k8s_role,
         k8s_mount_point=vault_k8s_mount_point,

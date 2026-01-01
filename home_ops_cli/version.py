@@ -5,4 +5,4 @@ app = typer.Typer()
 
 @app.command()
 def version():
-    print("home-ops-cli Version 0.3.5")
+    print("home-ops-cli Version 0.4.2")

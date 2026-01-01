@@ -12,6 +12,22 @@ import typer
 from click.core import ParameterSource
 from requests import Response
 
+from ..options import (
+    AwsAccessKeyIdOption,
+    AwsEndpointUrlOption,
+    AwsProfileOption,
+    AwsRegionOption,
+    AwsSecretAccessKeyOption,
+    S3BucketNameOption,
+    S3KeyPrefixOption,
+    VaultAddressOption,
+    VaultCACertOption,
+    VaultCAPathOption,
+    VaultK8sMountPointOption,
+    VaultK8sRoleOption,
+    VaultSkipVerifyOption,
+    VaultTokenOption,
+)
 from ..utils import handle_vault_authentication
 
 app = typer.Typer()
@@ -94,87 +110,25 @@ def verify_internal_checksums(snapshot_data: bytes):
         raise tarfile.TarError(f"Error reading Raft snapshot archive: {e}")
 
 
-# --- Main Command ---
-
-
 @app.command(
     help="Executes a complete workflow for obtaining a HashiCorp Vault Raft snapshot from a cluster, verifying its integrity, and uploading it securely to S3 storage. Provides flexible authentication options for both HashiCorp Vault and S3 APIs."
 )
 def backup_raft_snapshot(
     ctx: typer.Context,
-    s3_bucket_name: Annotated[
-        str, typer.Option(envvar="S3_BUCKET_NAME", help="Target S3 bucket name.")
-    ],
-    vault_address: Annotated[
-        str, typer.Option(envvar="VAULT_ADDR", help="Vault server address.")
-    ],
-    vault_k8s_role: Annotated[
-        str | None, typer.Option(envvar="VAULT_K8S_ROLE", help="Vault K8s role name.")
-    ] = None,
-    vault_k8s_mount_point: Annotated[
-        str,
-        typer.Option(
-            envvar="VAULT_K8S_MOUNT_POINT", help="K8s auth backend mount path."
-        ),
-    ] = "kubernetes",
-    vault_token: Annotated[
-        str | None,
-        typer.Option(envvar="VAULT_TOKEN", help="Vault authentication token."),
-    ] = None,
-    vault_ca_cert: Annotated[
-        str | None,
-        typer.Option(
-            envvar="VAULT_CACERT",
-            help="Path to Vault CA certificate.",
-        ),
-    ] = None,
-    vault_ca_path: Annotated[
-        str | None,
-        typer.Option(
-            envvar="VAULT_CAPATH",
-            help="Path to directory of Vault CA certificates.",
-        ),
-    ] = None,
-    vault_skip_verify: Annotated[
-        bool,
-        typer.Option(
-            envvar="VAULT_SKIP_VERIFY", help="Skip Vault TLS certificate verification."
-        ),
-    ] = False,
-    aws_profile: Annotated[
-        str | None,
-        typer.Option(
-            envvar="AWS_PROFILE", help="AWS Profile name to use for authentication."
-        ),
-    ] = None,
-    aws_access_key_id: Annotated[
-        str | None,
-        typer.Option(envvar="AWS_ACCESS_KEY_ID", help="AWS Access Key ID."),
-    ] = None,
-    aws_secret_access_key: Annotated[
-        str | None,
-        typer.Option(
-            envvar="AWS_SECRET_ACCESS_KEY",
-            help="AWS Secret Access Key.",
-        ),
-    ] = None,
-    aws_endpoint_url: Annotated[
-        str | None,
-        typer.Option(
-            envvar="AWS_ENDPOINT_URL",
-            help="Custom AWS endpoint URL (e.g., for MinIO or Cloudflare R2).",
-        ),
-    ] = None,
-    aws_region: Annotated[
-        str,
-        typer.Option(
-            envvar="AWS_REGION", help="Official AWS Region (e.g., us-east-1)."
-        ),
-    ] = "us-east-1",
-    s3_key_prefix: Annotated[
-        str,
-        typer.Option(help="The S3 key prefix (folder) to store the snapshot in."),
-    ] = "",
+    s3_bucket_name: S3BucketNameOption,
+    vault_address: VaultAddressOption,
+    vault_k8s_role: VaultK8sRoleOption = None,
+    vault_k8s_mount_point: VaultK8sMountPointOption = "kubernetes",
+    vault_token: VaultTokenOption = None,
+    vault_ca_cert: VaultCACertOption = None,
+    vault_ca_path: VaultCAPathOption = None,
+    vault_skip_verify: VaultSkipVerifyOption = False,
+    aws_profile: AwsProfileOption = None,
+    aws_access_key_id: AwsAccessKeyIdOption = None,
+    aws_secret_access_key: AwsSecretAccessKeyOption = None,
+    aws_endpoint_url: AwsEndpointUrlOption = None,
+    aws_region: AwsRegionOption = "us-east-1",
+    s3_key_prefix: S3KeyPrefixOption = "",
     s3_checksum_algorithm: Annotated[
         S3ChecksumAlgorithm,
         typer.Option(help="The algorithm to use for s3 transport checksum."),
@@ -215,7 +169,9 @@ def backup_raft_snapshot(
         os.environ["AWS_REGION"] = aws_region
 
     vault_client = handle_vault_authentication(
-        hvac.Client(verify=vault_ca_cert or vault_ca_path or not vault_skip_verify),
+        hvac.Client(
+            verify=str(vault_ca_cert) or str(vault_ca_path) or not vault_skip_verify
+        ),
         vault_token=vault_token,
         k8s_role=vault_k8s_role,
         k8s_mount_point=vault_k8s_mount_point,

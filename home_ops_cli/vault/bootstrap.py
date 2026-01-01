@@ -1,14 +1,26 @@
 import os
-import re
 import time
 
 import hvac
 import typer
 from click.core import ParameterSource
 from hvac.exceptions import InvalidRequest
-from typing_extensions import Annotated
 
-from ..utils import parse_regex
+from ..options import (
+    AwsAccessKeyIdOption,
+    AwsEndpointUrlOption,
+    AwsProfileOption,
+    AwsRegionOption,
+    AwsSecretAccessKeyOption,
+    S3BucketNameOption,
+    S3KeyPrefixOption,
+    VaultAddressOption,
+    VaultCACertOption,
+    VaultCAPathOption,
+    VaultSkipVerifyOption,
+    VaultSnapshotNameOption,
+    VaultSnapshotNameRegexOption,
+)
 from .restore_raft_snapshot import restore_raft_snapshot
 
 app = typer.Typer()
@@ -19,49 +31,26 @@ app = typer.Typer()
 )
 def bootstrap(
     ctx: typer.Context,
-    vault_address: Annotated[
-        str,
-        typer.Option(help="Vault address (or set VAULT_ADDR)", envvar="VAULT_ADDR"),
-    ],
-    s3_bucket_name: Annotated[
-        str, typer.Option(help="S3 bucket where snapshots are stored")
-    ],
-    vault_ca_cert: Annotated[
-        str | None,
-        typer.Option(
-            envvar="VAULT_CACERT",
-            help="Path to Vault CA certificate.",
-        ),
-    ] = None,
-    vault_ca_path: Annotated[
-        str | None,
-        typer.Option(
-            envvar="VAULT_CAPATH",
-            help="Path to directory of Vault CA certificates.",
-        ),
-    ] = None,
-    vault_skip_verify: Annotated[
-        bool,
-        typer.Option(
-            envvar="VAULT_SKIP_VERIFY", help="Skip Vault TLS certificate verification."
-        ),
-    ] = False,
-    s3_key_prefix: Annotated[
-        str, typer.Option(help="S3 prefix/folder for snapshots")
-    ] = "",
-    filename: Annotated[
-        str | None, typer.Option(help="Specific snapshot file to restore")
-    ] = None,
-    filename_regex: Annotated[
-        re.Pattern | None,
-        typer.Option(parser=parse_regex, help="Regex to match snapshot filenames"),
-    ] = None,
-    aws_profile: Annotated[str | None, typer.Option(help="AWS profile to use")] = None,
+    vault_address: VaultAddressOption,
+    s3_bucket_name: S3BucketNameOption,
+    vault_ca_cert: VaultCACertOption = None,
+    vault_ca_path: VaultCAPathOption = None,
+    vault_skip_verify: VaultSkipVerifyOption = False,
+    s3_key_prefix: S3KeyPrefixOption = "",
+    filename: VaultSnapshotNameOption = None,
+    filename_regex: VaultSnapshotNameRegexOption = None,
+    aws_profile: AwsProfileOption = None,
+    aws_access_key_id: AwsAccessKeyIdOption = None,
+    aws_secret_access_key: AwsSecretAccessKeyOption = None,
+    aws_endpoint_url: AwsEndpointUrlOption = None,
+    aws_region: AwsRegionOption = "us-east-1",
 ):
     if ctx.get_parameter_source("vault_address") == ParameterSource.COMMANDLINE:
         os.environ["VAULT_ADDR"] = vault_address
 
-    client = hvac.Client(verify=vault_ca_cert or vault_ca_path or not vault_skip_verify)
+    client = hvac.Client(
+        verify=str(vault_ca_cert) or str(vault_ca_path) or not vault_skip_verify
+    )
 
     if not client.sys.is_initialized():
         typer.echo("Vault is not initialized. Starting initialization sequence...")
@@ -118,6 +107,10 @@ def bootstrap(
             filename=filename,
             filename_regex=filename_regex,
             aws_profile=aws_profile,
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key,
+            aws_endpoint_url=aws_endpoint_url,
+            aws_region=aws_region,
             force_restore=True,
             vault_token=root_token,
         )

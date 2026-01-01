@@ -8,8 +8,14 @@ from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from hvac.exceptions import InvalidPath, InvalidRequest, VaultError
 from requests import Response
-from typing_extensions import Annotated
 
+from ...options import (
+    VaultAddressOption,
+    VaultCACertOption,
+    VaultCAPathOption,
+    VaultSkipVerifyOption,
+    VaultTokenOption,
+)
 from ...utils import handle_vault_authentication
 
 app = typer.Typer()
@@ -26,40 +32,11 @@ def to_dict(resp: dict[str, Any] | Response | None) -> dict[str, Any]:
 @app.command()
 def rotate_issuing(
     ctx: typer.Context,
-    vault_address: Annotated[
-        str | None,
-        typer.Option(
-            envvar="VAULT_ADDR",
-            help="Vault URL (e.g., https://vault.example.com:8200)",
-        ),
-    ] = None,
-    vault_token: Annotated[
-        str | None,
-        typer.Option(
-            envvar="VAULT_TOKEN",
-            help="Vault token. If omitted, username/password login will be used.",
-        ),
-    ] = None,
-    vault_ca_cert: Annotated[
-        str | None,
-        typer.Option(
-            envvar="VAULT_CACERT",
-            help="Path to Vault CA certificate.",
-        ),
-    ] = None,
-    vault_ca_path: Annotated[
-        str | None,
-        typer.Option(
-            envvar="VAULT_CAPATH",
-            help="Path to directory of Vault CA certificates.",
-        ),
-    ] = None,
-    vault_skip_verify: Annotated[
-        bool,
-        typer.Option(
-            envvar="VAULT_SKIP_VERIFY", help="Skip Vault TLS certificate verification."
-        ),
-    ] = False,
+    vault_address: VaultAddressOption,
+    vault_token: VaultTokenOption = None,
+    vault_ca_cert: VaultCACertOption = None,
+    vault_ca_path: VaultCAPathOption = None,
+    vault_skip_verify: VaultSkipVerifyOption = False,
 ):
     ISS_MOUNT = "pki_iss"
     INT_MOUNT = "pki_int"
@@ -79,7 +56,9 @@ def rotate_issuing(
         os.environ["VAULT_TOKEN"] = vault_token
 
     vault_client = handle_vault_authentication(
-        hvac.Client(verify=vault_ca_cert or vault_ca_path or not vault_skip_verify),
+        hvac.Client(
+            verify=str(vault_ca_cert) or str(vault_ca_path) or not vault_skip_verify
+        ),
         vault_token=vault_token,
     )
 

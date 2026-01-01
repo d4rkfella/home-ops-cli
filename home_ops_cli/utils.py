@@ -1,5 +1,4 @@
 import asyncio
-import os
 import random
 import re
 import time
@@ -11,6 +10,8 @@ from typing import Any, Literal, overload
 import aiohttp
 import hvac
 import typer
+import validators
+from click.core import ParameterSource
 from hvac.exceptions import InvalidRequest, VaultError
 from kubernetes_asyncio import client, config  # type: ignore
 from kubernetes_asyncio.config import ConfigException
@@ -246,6 +247,38 @@ def validate_github_token(value: str) -> str:
         )
         raise typer.BadParameter(error_msg)
 
+    return value
+
+
+def validate_s3_key_prefix(ctx: typer.Context, param, value: str) -> str:
+    if value.startswith("/"):
+        raise typer.BadParameter(
+            "S3 key prefix must not start with '/'. Example: backups/2026/"
+        )
+
+    pattern = re.compile(r"^[A-Za-z0-9/_\-.]+$")
+    if not pattern.match(value):
+        raise typer.BadParameter(
+            "S3 key prefix contains invalid characters. "
+            "Allowed: letters, numbers, '/', '-', '_', '.'"
+        )
+
+    if not value.endswith("/"):
+        value = value + "/"
+
+    return value
+
+
+def validate_vault_address(ctx: typer.Context, param, value: str):
+    source = ctx.get_parameter_source(param.name)
+    if source == ParameterSource.DEFAULT:
+        typer.secho(
+            f"WARNING! VAULT_ADDR and {param.opts[0]} unset. Defaulting to {value}.",
+            fg=typer.colors.YELLOW,
+        )
+    else:
+        if not validators.url(value):
+            raise typer.BadParameter(f"Invalid Vault address URL: {value!r}")
     return value
 
 
