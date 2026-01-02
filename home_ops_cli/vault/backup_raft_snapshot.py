@@ -170,7 +170,13 @@ def backup_raft_snapshot(
 
     vault_client = handle_vault_authentication(
         hvac.Client(
-            verify=str(vault_ca_cert) or str(vault_ca_path) or not vault_skip_verify
+            verify=(
+                str(vault_ca_cert)
+                if vault_ca_cert
+                else str(vault_ca_path)
+                if vault_ca_path
+                else (not vault_skip_verify)
+            )
         ),
         vault_token=vault_token,
         k8s_role=vault_k8s_role,

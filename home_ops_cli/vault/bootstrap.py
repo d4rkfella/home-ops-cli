@@ -49,7 +49,13 @@ def bootstrap(
         os.environ["VAULT_ADDR"] = vault_address
 
     client = hvac.Client(
-        verify=str(vault_ca_cert) or str(vault_ca_path) or not vault_skip_verify
+        verify=(
+            str(vault_ca_cert)
+            if vault_ca_cert
+            else str(vault_ca_path)
+            if vault_ca_path
+            else (not vault_skip_verify)
+        )
     )
 
     if not client.sys.is_initialized():
