@@ -7,15 +7,18 @@ from typing import TYPE_CHECKING, Any, cast
 import boto3
 import typer
 from botocore.exceptions import NoCredentialsError, ProfileNotFound
+from mypy_boto3_s3.client import S3Client
 from textual import work
 from textual.app import App, ComposeResult
 from textual.color import Gradient
 from textual.containers import Container, Horizontal, Vertical
 from textual.screen import ModalScreen, Screen
 from textual.widgets import (
+    Button,
     DirectoryTree,
     Footer,
     Header,
+    Input,
     Label,
     ListItem,
     ListView,
@@ -26,10 +29,6 @@ from textual.widgets import (
     Tree,
 )
 from textual.widgets.tree import TreeNode
-
-if TYPE_CHECKING:
-    from mypy_boto3_s3.client import S3Client
-    from mypy_boto3_s3.type_defs import DeleteTypeDef
 
 
 class S3Browser(App):
@@ -42,6 +41,72 @@ class S3Browser(App):
     def on_mount(self):
         self.s3 = None
         self.push_screen(ProfileSelectScreen())
+
+    def delete_objects(self, bucket: str, prefix: str = "") -> int:
+        s3 = self.s3
+        assert s3 is not None
+
+        paginator = s3.get_paginator("list_objects_v2")
+        batch_size = 1000
+        total_deleted = 0
+        batch = []
+
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                batch.append({"Key": cast(str, obj.get("Key"))})
+
+                if len(batch) == batch_size:
+                    s3.delete_objects(
+                        Bucket=bucket, Delete={"Objects": batch, "Quiet": True}
+                    )
+                    total_deleted += len(batch)
+                    batch.clear()
+
+        if batch:
+            s3.delete_objects(Bucket=bucket, Delete={"Objects": batch, "Quiet": True})
+            total_deleted += len(batch)
+
+        return total_deleted
+
+
+class InputModalScreen(ModalScreen[str]):
+    CSS = """
+    InputModalScreen {
+        align: center middle;
+    }
+
+    InputModalScreen > Vertical {
+        width: 50%;
+        height: auto;
+        background: $surface;
+        border: thick $primary;
+    }
+    """
+
+    def __init__(self, title: str, prompt: str):
+        super().__init__()
+        self.title_text = title
+        self.prompt_text = prompt
+
+    def compose(self):
+        with Vertical(classes="modal"):
+            yield Static(self.title_text, classes="title")
+            yield Static(self.prompt_text)
+            yield Input(placeholder="Type here...", id="input-field")
+            yield Button("Submit", id="submit-btn")
+            yield Button("Cancel", id="cancel-btn")
+
+    async def on_button_pressed(self, event):
+        input_widget = self.query_one("#input-field", Input)
+        if event.button.id == "submit-btn":
+            value = input_widget.value.strip()
+            self.dismiss(value)
+        else:
+            self.dismiss(None)
+
+    async def on_input_submitted(self, event):
+        value = event.value.strip()
+        self.dismiss(value)
 
 
 class FilePreviewScreen(ModalScreen):
@@ -151,6 +216,143 @@ class DownloadScreen(ModalScreen):
             self.app.call_from_thread(self.dismiss)
 
 
+class UploadScreen(ModalScreen):
+    app: "S3Browser"  # type: ignore[assignment]
+
+    CSS = """
+    UploadScreen {
+        align: center middle;
+    }
+    
+    UploadScreen > Container {
+        width: 60;
+        height: auto;
+        background: $surface;
+        border: thick $primary;
+        padding: 2;
+    }
+    
+    UploadScreen .title {
+        text-align: center;
+        text-style: bold;
+        color: $accent;
+    }
+    
+    UploadScreen .hint {
+        text-align: center;
+        padding-top: 1;
+        color: $text-muted;
+    }
+    
+    UploadScreen #pbar {
+        margin: 1 0;
+    }
+    """
+
+    UPLOAD_GRADIENT = Gradient(
+        (0.0, "#A00000"),
+        (0.33, "#FF7300"),
+        (0.66, "#4caf50"),
+        (1.0, "#8bc34a"),
+        quality=50,
+    )
+
+    def __init__(self, bucket: str, local_path: str, tree_prefix: str = ""):
+        super().__init__()
+        self.bucket = bucket
+        self.local_path = local_path
+        self.tree_prefix = tree_prefix
+
+    def compose(self) -> ComposeResult:
+        filename = os.path.basename(self.local_path)
+        with Container():
+            yield Static(f"📤 Uploading: {filename}", classes="title")
+            yield ProgressBar(
+                total=100, show_eta=True, id="pbar", gradient=self.UPLOAD_GRADIENT
+            )
+            yield Static("Preparing...", id="upload-status", classes="hint")
+
+    def on_mount(self):
+        self.upload_file()
+
+    @work(thread=True)
+    def upload_file(self):
+        s3 = self.app.s3
+        assert s3 is not None
+        pbar = self.query_one("#pbar", ProgressBar)
+        status = self.query_one("#upload-status", Static)
+
+        try:
+            if os.path.isfile(self.local_path):
+                file_size = os.path.getsize(self.local_path)
+                self.app.call_from_thread(pbar.update, total=file_size)
+                self.app.call_from_thread(status.update, "Uploading file...")
+
+                filename = os.path.basename(self.local_path)
+                key = f"{self.tree_prefix}/{filename}" if self.tree_prefix else filename
+
+                def progress_callback(bytes_transferred):
+                    self.app.call_from_thread(pbar.update, progress=bytes_transferred)
+
+                s3.upload_file(
+                    self.local_path, self.bucket, key, Callback=progress_callback
+                )
+
+            else:
+                all_files = []
+                total_bytes = 0
+                for root, _, files in os.walk(self.local_path):
+                    for filename in files:
+                        full_path = os.path.join(root, filename)
+                        file_size = os.path.getsize(full_path)
+                        all_files.append((full_path, filename, root, file_size))
+                        total_bytes += file_size
+
+                total_files = len(all_files)
+                base_folder = os.path.basename(self.local_path)
+
+                self.app.call_from_thread(pbar.update, total=total_bytes)
+                self.app.call_from_thread(
+                    status.update, f"Uploading {total_files} files..."
+                )
+
+                uploaded_bytes = 0
+                for idx, (full_path, filename, root, file_size) in enumerate(
+                    all_files, 1
+                ):
+                    relative_path = os.path.relpath(full_path, self.local_path)
+                    relative_path = relative_path.replace(os.sep, "/")
+
+                    parts = []
+                    if self.tree_prefix:
+                        parts.append(self.tree_prefix)
+                    parts.append(base_folder)
+                    parts.append(relative_path)
+                    key = "/".join(parts)
+
+                    self.app.call_from_thread(
+                        status.update, f"Uploading {idx}/{total_files}: {filename}"
+                    )
+
+                    file_start_bytes = uploaded_bytes
+
+                    def progress_callback(bytes_transferred):
+                        total_progress = file_start_bytes + bytes_transferred
+                        self.app.call_from_thread(pbar.update, progress=total_progress)
+
+                    s3.upload_file(
+                        full_path, self.bucket, key, Callback=progress_callback
+                    )
+                    uploaded_bytes += file_size
+
+            self.app.notify(f"✅ Upload complete")
+            self.app.call_from_thread(self.dismiss, True)
+
+        except Exception as e:
+            self.app.notify(f"❌ Upload failed: {e}", severity="error")
+            self.app.call_from_thread(self.dismiss, False)
+
+
 class ProfileSelectScreen(Screen):
     app: "S3Browser"  # type: ignore[assignment]
 
@@ -192,7 +394,11 @@ class ProfileSelectScreen(Screen):
 class BucketSelectScreen(Screen):
     app: "S3Browser"  # type: ignore[assignment]
 
-    BINDINGS = [("b", "back", "Back"), ("d", "delete", "Delete Bucket")]
+    BINDINGS = [
+        ("b", "back", "Back"),
+        ("d", "delete", "Delete Bucket"),
+        ("c", "create", "Create Bucket"),
+    ]
 
     def __init__(self, profile_name):
         super().__init__()
@@ -212,54 +418,64 @@ class BucketSelectScreen(Screen):
         try:
             s3 = self.app.s3
             assert s3 is not None
-            buckets = s3.list_buckets().get("Buckets", [])
-            self.app.call_from_thread(self.update_bucket_list, buckets)
-        except Exception as e:
-            self.app.notify(f"Error loading buckets: {e}", severity="error")
 
-    def update_bucket_list(self, buckets):
-        lv = self.query_one("#buckets", ListView)
-        lv.clear()
-        if not buckets:
-            self.app.notify(f"No buckets found in profile '{self.profile_name}'")
-        else:
-            for b in buckets:
-                lv.append(ListItem(Label(b["Name"]), name=b["Name"]))
+            buckets = s3.list_buckets().get("Buckets", [])
+
+            def update_ui():
+                lv = self.query_one("#buckets", ListView)
+                lv.clear()
+                if not buckets:
+                    self.app.notify(
+                        f"No buckets found in profile '{self.profile_name}'"
+                    )
+                else:
+                    for b in buckets:
+                        name = cast(str, b.get("Name"))
+                        lv.append(ListItem(Label(name), name=name))
+
+            self.app.call_from_thread(update_ui)
+
+        except Exception as e:
+            self.app.call_from_thread(
+                self.app.notify, f"Error loading buckets: {e}", severity="error"
+            )
+
+    @work(thread=True)
+    def create_bucket(self, bucket_name: str):
+        s3 = self.app.s3
+        assert s3 is not None
+
+        try:
+            s3.create_bucket(Bucket=bucket_name)
+            self.app.call_from_thread(
+                self.app.notify, f"✅ Created bucket: {bucket_name}"
+            )
+
+            self.app.call_from_thread(self.load_buckets)
+
+        except Exception as e:
+            self.app.call_from_thread(
+                self.app.notify, f"❌ Failed to create bucket: {e}", severity="error"
+            )
 
     @work(thread=True)
     def delete_bucket(self, bucket_name: str):
+        client = cast(S3Client, self.app.s3)
         try:
-            s3 = self.app.s3
-            assert s3 is not None
-            paginator = s3.get_paginator("list_objects_v2")
-            object_keys = []
-            for page in paginator.paginate(Bucket=bucket_name):
-                for obj in page.get("Contents", []):
-                    key = obj.get("Key")
-                    assert key is not None
-                    object_keys.append(key)
-
-            if object_keys:
+            total_deleted = self.app.delete_objects(bucket=bucket_name)
+            if total_deleted:
                 self.app.call_from_thread(
                     self.app.notify,
-                    f"Deleting {len(object_keys)} objects in {bucket_name}...",
+                    f"Deleted {total_deleted} objects in {bucket_name}...",
                     timeout=5,
                 )
-                batch_size = 1000
-                for i in range(0, len(object_keys), batch_size):
-                    delete_dict: DeleteTypeDef = {
-                        "Objects": [
-                            {"Key": key} for key in object_keys[i : i + batch_size]
-                        ],
-                        "Quiet": True,
-                    }
-                    s3.delete_objects(Bucket=bucket_name, Delete=delete_dict)
 
-            s3.delete_bucket(Bucket=bucket_name)
+            client.delete_bucket(Bucket=bucket_name)
             self.app.call_from_thread(
                 self.app.notify, f"✅ Deleted bucket: {bucket_name}"
             )
             self.app.call_from_thread(self.load_buckets)
+
         except Exception as e:
             self.app.call_from_thread(
                 self.app.notify, f"❌ Delete failed: {e}", severity="error"
@@ -268,6 +484,15 @@ class BucketSelectScreen(Screen):
     async def on_list_view_selected(self, event: ListView.Selected):
         bucket = event.item.name
         await self.app.push_screen(ObjectBrowserTreeScreen(bucket, self.profile_name))
+
+    @work
+    async def action_create(self):
+        bucket_name = await self.app.push_screen_wait(
+            InputModalScreen(title="Create New Bucket", prompt="Enter bucket name:")
+        )
+
+        if bucket_name:
+            self.create_bucket(bucket_name)
 
     @work
     async def action_delete(self):
@@ -339,10 +564,9 @@ class ObjectBrowserTreeScreen(Screen):
 
     @work(thread=True)
     def load_node_worker(self, node: TreeNode, prefix: str) -> None:
-        s3 = self.app.s3
-        assert s3 is not None
+        client = cast(S3Client, self.app.s3)
 
-        paginator = s3.get_paginator("list_objects_v2")
+        paginator = client.get_paginator("list_objects_v2")
         items_to_add: list[dict] = []
         is_empty = True
 
@@ -351,10 +575,9 @@ class ObjectBrowserTreeScreen(Screen):
                 Bucket=self.bucket, Prefix=prefix, Delimiter="/"
             ):
                 for p in page.get("CommonPrefixes", []):
-                    folder_prefix = p.get("Prefix")
-                    assert folder_prefix is not None
+                    prefix_key = cast(str, p.get("Prefix"))
                     is_empty = False
-                    items_to_add.append({"type": "prefix", "key": folder_prefix})
+                    items_to_add.append({"type": "prefix", "key": prefix_key})
 
                 for o in page.get("Contents", []):
                     key = o.get("Key")
@@ -474,44 +697,20 @@ class ObjectBrowserTreeScreen(Screen):
     async def action_upload(self):
         if not (local_path := await self.app.push_screen_wait(FileSelectionScreen())):
             return
-        self._upload(local_path)
-
-    @work(thread=True)
-    def _upload(self, local_path):
-        bucket = self.bucket
-        s3 = self.app.s3
-        assert s3 is not None
 
         tree = self.query_one("#object-tree", Tree)
         node = tree.cursor_node
-        prefix = ""
 
+        tree_prefix = ""
         if node and node.data and node.data.get("type") == "prefix":
-            prefix = node.data["key"]
+            tree_prefix = node.data["key"].rstrip("/")
 
-        try:
-            if os.path.isfile(local_path):
-                filename = os.path.basename(local_path)
-                key = f"{prefix}{filename}"
-                s3.upload_file(local_path, bucket, key)
-            else:
-                base = os.path.basename(local_path)
+        result = await self.app.push_screen_wait(
+            UploadScreen(self.bucket, local_path, tree_prefix)
+        )
 
-                for root, _, files in os.walk(local_path):
-                    for filename in files:
-                        full = os.path.join(root, filename)
-                        relative = os.path.relpath(full, local_path)
-                        key = f"{prefix}{base}/{relative}"
-
-                        s3.upload_file(full, bucket, key)
-
-            self.app.call_from_thread(self.app.notify, "Upload complete.")
-            self.app.call_from_thread(self.action_refresh)
-
-        except Exception as e:
-            self.app.call_from_thread(
-                self.app.notify, f"Upload failed: {e}", severity="error"
-            )
+        if result:
+            await self.action_refresh()
 
     async def action_share(self):
         node = self.query_one("#object-tree", Tree).cursor_node
@@ -532,6 +731,7 @@ class ObjectBrowserTreeScreen(Screen):
 
     @work
     async def action_delete(self):
+        client = cast(S3Client, self.app.s3)
         tree = self.query_one("#object-tree", Tree)
         node = tree.cursor_node
         if not node or not node.data or node.data.get("type") in ["empty", "error"]:
@@ -549,63 +749,22 @@ class ObjectBrowserTreeScreen(Screen):
 
         confirmed = await self.app.push_screen_wait(screen)
         if confirmed:
-            self.delete_object(key, node_type, node)
-
-    @work(thread=True)
-    def delete_object(self, key: str, node_type: str, node: TreeNode):
-        s3 = self.app.s3
-        assert s3 is not None
-        try:
-            if node_type == "prefix":
-                objects_to_delete = []
-                paginator = s3.get_paginator("list_objects_v2")
-                for page in paginator.paginate(Bucket=self.bucket, Prefix=key):
-                    for obj in page.get("Contents", []):
-                        obj_key = obj.get("Key")
-                        assert obj_key is not None
-                        objects_to_delete.append(obj_key)
-                if objects_to_delete:
-                    batch_size = 1000
-                    for i in range(0, len(objects_to_delete), batch_size):
-                        delete_dict: DeleteTypeDef = {
-                            "Objects": [
-                                {"Key": key}
-                                for key in objects_to_delete[i : i + batch_size]
-                            ],
-                            "Quiet": True,
-                        }
-                        s3.delete_objects(Bucket=self.bucket, Delete=delete_dict)
-                    msg = f"✅ Deleted folder: {key}  ({
-                        len(objects_to_delete)
-                    }  objects) "
-            else:
-                s3.delete_object(Bucket=self.bucket, Key=key)
-                msg = f"✅ Deleted object: {key}"
-            self.app.call_from_thread(self.app.notify, msg)
-            self.app.call_from_thread(self.delete_node_and_refresh, node)
-        except Exception as e:
-            self.app.call_from_thread(
-                self.app.notify, f"❌ Delete failed: {e}", severity="error"
-            )
-
-    def delete_node_and_refresh(self, node: TreeNode):
-        parent = node.parent
-        node.remove()
-        if (
-            parent
-            and parent.data
-            and parent.data.get("type") == "prefix"
-            and len(list(parent.children)) == 0
-        ):
-            parent.add_leaf("(empty)", data={"type": "empty", "key": ""})
+            try:
+                if node_type == "object":
+                    client.delete_object(Bucket=self.bucket, Key=key)
+                else:
+                    self.app.delete_objects(bucket=self.bucket, prefix=key)
+            except Exception as e:
+                self.app.notify(f"❌ Delete failed: {e}", severity="error")
+            node.remove()
+            self.loaded_nodes.discard(id(node))
 
     async def action_refresh(self):
         tree = self.query_one("#object-tree", Tree)
-        node_to_reload = tree.root
-        self.loaded_nodes.discard(id(node_to_reload))
-        node_to_reload.remove_children()
-        self.load_node_worker(node_to_reload, "")
-        self.app.notify(f"Refreshed: {self.bucket}")
+        self.loaded_nodes.clear()
+        tree.root.remove_children()
+        self.load_node_worker(tree.root, "")
+        self.app.notify(f"Refreshed bucket: {self.bucket}")
 
     async def action_back(self):
         await self.app.pop_screen()
@@ -660,9 +819,13 @@ class ConfirmDeleteScreen(ModalScreen[bool]):
 
     CSS = """
     ConfirmDeleteScreen {
-        width: 50%;
-        height: 50%;
         align: center middle;
+    }
+    ConfirmDeleteScreen > Container {
+        width: 50%;
+        height: auto;
+        background: $surface;
+        border: thick $error;
     }
     Markdown {
         width: auto;
@@ -672,7 +835,6 @@ class ConfirmDeleteScreen(ModalScreen[bool]):
     BINDINGS = [
         ("y", "yes", "Yes (Delete)"),
         ("n", "cancel", "No (Cancel)"),
-        ("d", "dry", "Dry Run"),
     ]
 
     def __init__(
@@ -688,7 +850,6 @@ class ConfirmDeleteScreen(ModalScreen[bool]):
         self.key = key
         self.prefix = prefix
         self.delete_bucket = delete_bucket
-        self.objects_to_delete: list[str]
 
         num_set = sum(bool(x) for x in (self.key, self.prefix, self.delete_bucket))
         if num_set != 1:
@@ -697,90 +858,40 @@ class ConfirmDeleteScreen(ModalScreen[bool]):
             )
 
     def compose(self) -> ComposeResult:
-        yield Markdown(None)
+        with Container():
+            yield Markdown(None)
 
     def on_mount(self):
-        self.update_markdown()
-
-    @work(thread=True)
-    def update_markdown(self):
-        markdown_widget = self.query_one(Markdown)
-        try:
-            s3 = self.app.s3
-            assert s3 is not None
-            paginator = s3.get_paginator("list_objects_v2")
-            self.objects_to_delete = []
-
-            if self.key:
-                self.objects_to_delete = [self.key]
-
-            elif self.prefix:
-                for page in paginator.paginate(Bucket=self.bucket, Prefix=self.prefix):
-                    self.objects_to_delete.extend(
-                        cast(str, obj.get("Key")) for obj in page.get("Contents", [])
-                    )
-
-            elif self.delete_bucket:
-                for page in paginator.paginate(Bucket=self.bucket):
-                    self.objects_to_delete.extend(
-                        cast(str, obj.get("Key")) for obj in page.get("Contents", [])
-                    )
-
-            count_msg = (
-                "No objects found."
-                if not self.objects_to_delete
-                else f"{len(self.objects_to_delete)} object(s) will be deleted."
+        if self.key:
+            markdown_text = (
+                f"# ⚠️ Delete Object\n\n"
+                f"**Bucket:** `{self.bucket}`  \n"
+                f"**Object:** `{self.key}`\n\n"
+                "This action will permanently delete the object.\n\n"
+                "---\n\n"
+                "Press **y** to confirm, **n** to cancel."
             )
-
-            if self.key:
-                markdown_text = (
-                    f"# ⚠️ Delete Object\n\n"
-                    f"**Bucket:** `{self.bucket}`  \n"
-                    f"**Object:** `{self.key}`\n\n"
-                    "This action will permanently delete the object.\n\n"
-                    "---\n\n"
-                    "Press **y** to confirm, **n** to cancel."
-                )
-                self.app.call_from_thread(markdown_widget.update, markdown_text)
-            elif self.prefix:
-                markdown_text = (
-                    f"# ⚠️ Delete Objects\n\n"
-                    f"**Bucket:** `{self.bucket}`  \n"
-                    f"**Prefix:** `{self.prefix}`\n\n"
-                    f"{count_msg}\n\n"
-                    f"This action will permanently delete all objects under `{self.prefix}`.\n\n"
-                    "---\n\n"
-                    "Press **y** to confirm, **n** to cancel, or **d** for dry run."
-                )
-                self.app.call_from_thread(markdown_widget.update, markdown_text)
-            elif self.delete_bucket:
-                markdown_text = (
-                    f"# ⚠️ Delete Bucket\n\n"
-                    f"**Bucket:** `{self.bucket}`\n\n"
-                    f"{count_msg}\n\n"
-                    "This action will permanently delete the bucket and all its contents.\n\n"
-                    "---\n\n"
-                    "Press **y** to confirm, **n** to cancel, or **d** for dry run."
-                )
-                self.app.call_from_thread(markdown_widget.update, markdown_text)
-
-        except Exception as e:
-            self.app.call_from_thread(
-                self.app.notify, f"Error counting objects: {e}", severity="error"
+        elif self.prefix:
+            markdown_text = (
+                f"# ⚠️ Delete Objects\n\n"
+                f"**Bucket:** `{self.bucket}`  \n"
+                f"**Prefix:** `{self.prefix}`\n\n"
+                f"This action will permanently delete all objects under `{self.prefix}`.\n\n"
+                "---\n\n"
+                "Press **y** to confirm, **n** to cancel."
             )
-            self.app.call_from_thread(markdown_widget.update, f"Error: {e}")
+        elif self.delete_bucket:
+            markdown_text = (
+                f"# ⚠️ Delete Bucket\n\n"
+                f"**Bucket:** `{self.bucket}`\n\n"
+                "This action will permanently delete the bucket and all its contents.\n\n"
+                "---\n\n"
+                "Press **y** to confirm, **n** to cancel."
+            )
+        self.query_one(Markdown).update(markdown_text)
 
     async def action_yes(self):
         self.dismiss(True)
-
-    async def action_dry(self):
-        preview = "\n".join(self.objects_to_delete)
-        await self.app.push_screen(
-            ModalMessageScreen(
-                f"[DRY RUN]\nWould delete {len(self.objects_to_delete)} objects:\n{preview}"
-            )
-        )
-        self.dismiss(False)
 
     async def action_cancel(self):
         self.dismiss(False)

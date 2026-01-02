@@ -251,6 +251,8 @@ def validate_github_token(value: str) -> str:
 
 
 def validate_s3_key_prefix(ctx: typer.Context, param, value: str) -> str:
+    if not value:
+        return ""
     if value.startswith("/"):
         raise typer.BadParameter(
             "S3 key prefix must not start with '/'. Example: backups/2026/"

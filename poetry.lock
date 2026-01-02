@@ -1773,7 +1773,7 @@ version = "1.42.16"
 description = "Type annotations for boto3 S3 1.42.16 service generated with mypy-boto3-builder 8.12.0"
 optional = false
 python-versions = ">=3.9"
-groups = ["dev"]
+groups = ["main"]
 files = [
     {file = "mypy_boto3_s3-1.42.16-py3-none-any.whl", hash = "sha256:12426bd23645a95c7b113b9df3e12466431207358c239086b403f8e55676b39e"},
     {file = "mypy_boto3_s3-1.42.16.tar.gz", hash = "sha256:bda32c4ee9f08d5e83e88ab3906359271021438794644f6a0b8a8f674594a1e4"},
@@ -2783,4 +2783,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13,<4.0"
-content-hash = "f45b974cbd70529d955cf3efb2d273c3246ea435caf7c3979ebdeba1832d6a1e"
+content-hash = "b61f9d799747b8f3ccc8b0ea0669dbe47d7f246def24ce10c63d2ba6b0464036"
