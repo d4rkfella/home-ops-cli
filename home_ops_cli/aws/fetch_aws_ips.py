@@ -104,9 +104,7 @@ async def fetch_aws_ips(
                 yaml.dump(policy, f)
 
             typer.echo(
-                f"Updated {policy_file} with {
-                    len(all_cidrs)
-                } unique CIDRs in the egress rule targeting port {target_port}."
+                f"Updated {policy_file} with {len(all_cidrs)} unique CIDRs in the egress rule targeting port {target_port}."
             )
 
         except Exception as e:

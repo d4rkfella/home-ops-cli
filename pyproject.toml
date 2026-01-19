@@ -1,13 +1,13 @@
 [project]
 name = "home-ops-cli"
-version = "0.4.4"
+version = "0.4.47"
 description = "A CLI tool for managing home operations tasks."
 readme = "README.md"
 license = { text = "MIT" }
 authors = [
     { name = "d4rkfella", email = "georgi.panov@darkfellanetwork.com" }
 ]
-requires-python = ">=3.13,<4.0"
+requires-python = ">=3.10,<4.0"
 dependencies = [
     "hvac==2.4.0",
     "ruamel.yaml==0.18.17",

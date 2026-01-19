@@ -1,6 +1,7 @@
 import asyncio
 import random
 import re
+import socket
 import time
 from contextlib import asynccontextmanager
 from functools import wraps
@@ -27,6 +28,14 @@ def async_command(f):
         return asyncio.run(f(*args, **kwargs))
 
     return wrapper
+
+
+def find_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        s.listen(1)
+        port = s.getsockname()[1]
+    return port
 
 
 async def retry_with_backoff(
@@ -64,7 +73,7 @@ async def dynamic_client():
     except ConfigException:
         try:
             config.load_incluster_config()
-            print("Configuration loaded from in-cluster service account.")
+            print("Loaded in-cluster congig.")
         except ConfigException as e:
             raise RuntimeError(f"Could not load Kubernetes configuration: {e}")
     async with client.ApiClient() as api_client:

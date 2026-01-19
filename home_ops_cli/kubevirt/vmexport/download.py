@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import re
 import shutil
 import subprocess
 import time
@@ -9,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
 from urllib.parse import urlparse, urlunparse
+import os
 
 import aiofiles
 import aiogzip
@@ -26,8 +28,10 @@ from kubevirt.models import (
     K8sIoApimachineryPkgApisMetaV1ObjectMeta,
     V1beta1VirtualMachineExport,
     V1beta1VirtualMachineExportSpec,
+    V1beta1VirtualMachineExportStatus,
 )
 from kubevirt.rest import ApiException as KubeVirtApiException
+from textual.color import Gradient
 from rich.console import Console
 from rich.progress import (
     BarColumn,
@@ -45,6 +49,15 @@ from ...utils import async_command, dynamic_client, parse_content_range, validat
 
 VMImageFormat = Literal["gzip", "raw", "qcow2"]
 ManifestFormat = Literal["yaml", "json"]
+
+
+GRADIENT = Gradient(
+    (0.0, "#A00000"),
+    (0.33, "#FF7300"),
+    (0.66, "#4caf50"),
+    (1.0, "#8bc34a"),
+    quality=50,
+)
 
 
 @dataclass
@@ -216,15 +229,19 @@ async def create_export_resource(
 async def get_token_from_secret(
     client: DynamicClient, vmexport: V1beta1VirtualMachineExport
 ) -> str:
-    secret_name = ""
-    if getattr(vmexport, "status") and getattr(vmexport.status, "token_secret_ref"):
+    if vmexport.status and vmexport.status.token_secret_ref:
         secret_name = vmexport.status.token_secret_ref
+    else:
+        raise RuntimeError("Cannot read tokenSecretRef from VMExport resource")
 
     secrets_api = await client.resources.get(api_version="v1", kind="Secret")
 
     try:
         secret_resource = await secrets_api.get(
-            name=secret_name, namespace=vmexport.metadata.namespace
+            name=secret_name,
+            namespace=cast(
+                K8sIoApimachineryPkgApisMetaV1ObjectMeta, vmexport.metadata
+            ).namespace,
         )
     except Exception as e:
         raise RuntimeError(f"Error fetching secret '{secret_name}': {e}")
@@ -261,57 +278,57 @@ async def wait_for_export_ready(
 ):
     console = console or Console()
 
+    is_ci = os.getenv("GITHUB_ACTIONS") == "true" or not console.is_terminal
+
     with Progress(
-        SpinnerColumn(),
+        SpinnerColumn() if not is_ci else TextColumn("•"),
         TextColumn("[dim]{task.fields[msg]}"),
         console=console,
-        transient=True,
+        transient=False,
+        auto_refresh=not is_ci,
     ) as progress:
         task = progress.add_task(
             "wait",
-            msg=f"checking VMExport {vme_info.name}...",
+            msg=f"Checking VMExport status...",
             total=None,
         )
 
         start = time.time()
+        last_refresh = 0.0
+
         while time.time() - start < vme_info.readiness_timeout:
             vme = await get_virtual_machine_export(kv_api, vme_info)
+
             if vme is None:
-                progress.update(
-                    task,
-                    msg=f"couldn't get VM Export {vme_info.name}, waiting for it to be created...",
-                )
-                await asyncio.sleep(PROCESSING_WAIT_INTERVAL)
-                continue
+                current_msg = f"couldn't get VM Export {vme_info.name}, waiting for it to be created..."
+            else:
+                status = getattr(vme, "status", None)
+                if not status:
+                    current_msg = "waiting for export status..."
+                else:
+                    phase = getattr(status, "phase", None)
+                    if phase != "Ready":
+                        current_msg = f"VM Export '{vme_info.name}' is not ready, waiting... (Current status: {phase})"
+                    else:
+                        links = getattr(status, "links", None)
+                        if not links or (
+                            not getattr(links, "external", None)
+                            and not getattr(links, "internal", None)
+                        ):
+                            current_msg = "[yellow]waiting for VM Export '{vme_info.name}' links to be available...[/yellow]"
+                        else:
+                            progress.update(task, msg="VMExport is ready!")
+                            return
 
-            status = getattr(vme, "status", None)
-            if not status:
-                progress.update(task, msg="waiting for export status...")
-                await asyncio.sleep(PROCESSING_WAIT_INTERVAL)
-                continue
+            progress.update(task, msg=current_msg)
 
-            phase = getattr(status, "phase", None)
-            if phase != "Ready":
-                progress.update(
-                    task,
-                    msg=f"waiting for VM Export '{vme_info.name}' status to be ready (phase: {phase})...",
-                )
-                await asyncio.sleep(PROCESSING_WAIT_INTERVAL)
-                continue
+            if is_ci:
+                if time.time() - last_refresh >= 5.0:
+                    progress.refresh()
+                    last_refresh = time.time()
 
-            links = getattr(status, "links", None)
-            if not links or (
-                not getattr(links, "external", None)
-                and not getattr(links, "internal", None)
-            ):
-                progress.update(
-                    task,
-                    msg="[yellow]waiting for VM Export '{vme_info.name}' links to be available...[/yellow]",
-                )
-                await asyncio.sleep(PROCESSING_WAIT_INTERVAL)
-                continue
-            progress.console.print("VMExport '{vme_info.name}' is ready!")
-            return
+            await asyncio.sleep(PROCESSING_WAIT_INTERVAL)
+
     raise TimeoutError(
         f"VMExport '{vme_info.name}' did not reach Ready state within {vme_info.readiness_timeout}s"
     )
@@ -328,14 +345,17 @@ def _replace_url_with_service_url(manifest_url: str, service_url: str | None) ->
 async def get_url_from_vmexport(
     vmexport: V1beta1VirtualMachineExport, vme_info: VMExportInfo
 ) -> str:
+    status = cast(V1beta1VirtualMachineExportStatus, vmexport.status)
     if vme_info.service_url:
-        links = getattr(vmexport.status.links, "internal", None)
+        links = getattr(status.links, "internal", None)
     else:
-        links = getattr(vmexport.status.links, "external", None)
+        links = getattr(status.links, "external", None)
+
+    metadata = cast(K8sIoApimachineryPkgApisMetaV1ObjectMeta, vmexport.metadata)
 
     if not links or not getattr(links, "volumes", None):
         raise ValueError(
-            f"unable to access the volume info from '{vmexport.metadata.namespace}/{vmexport.metadata.name}' VirtualMachineExport"
+            f"unable to access the volume info from '{metadata.namespace}/{metadata.name}' VirtualMachineExport"
         )
 
     volumes = links.volumes
@@ -343,7 +363,7 @@ async def get_url_from_vmexport(
 
     if volume_number > 1 and not vme_info.volume:
         raise ValueError(
-            f"detected more than one downloadable volume in '{vmexport.metadata.namespace}/{vmexport.metadata.name}' VirtualMachineExport: "
+            f"detected more than one downloadable volume in '{metadata.namespace}/{metadata.name}' VirtualMachineExport: "
             "Select the expected volume using the --volume flag"
         )
 
@@ -366,7 +386,7 @@ async def get_url_from_vmexport(
 
     if not download_url:
         raise ValueError(
-            f"unable to get a valid URL from '{vmexport.metadata.namespace}/{vmexport.metadata.name}' VirtualMachineExport"
+            f"unable to get a valid URL from '{metadata.namespace}/{metadata.name}' VirtualMachineExport"
         )
 
     return download_url
@@ -377,30 +397,28 @@ def get_manifest_urls_from_vmexport(
 ):
     res = {}
 
+    status = cast(V1beta1VirtualMachineExportStatus, vmexport.status)
+    metadata = cast(K8sIoApimachineryPkgApisMetaV1ObjectMeta, vmexport.metadata)
     if not vme_info.service_url:
-        if (
-            getattr(vmexport.status, "links", None) is None
-            or getattr(vmexport.status.links, "external", None) is None
-            or not getattr(vmexport.status.links.external, "manifests", None)
-        ):
+        links = getattr(status, "links", None)
+        external = getattr(links, "external", None) if links else None
+        manifests = getattr(external, "manifests", None) if external else None
+        if not manifests:
             raise ValueError(
-                f"unable to access the manifest info from '{vmexport.metadata.namespace}/{vmexport.metadata.name}' VirtualMachineExport"
+                f"unable to access the manifest info from '{metadata.namespace}/{metadata.name}' VirtualMachineExport"
             )
-
-        for manifest in vmexport.status.links.external.manifests:
+        for manifest in manifests:
             res[manifest.type] = manifest.url
 
     else:
-        if (
-            getattr(vmexport.status, "links", None) is None
-            or getattr(vmexport.status.links, "internal", None) is None
-            or not getattr(vmexport.status.links.internal, "manifests", None)
-        ):
+        links = getattr(status, "links", None)
+        internal = getattr(links, "internal", None) if links else None
+        manifests = getattr(internal, "manifests", None) if internal else None
+        if not manifests:
             raise ValueError(
-                f"unable to access the manifest info from '{vmexport.metadata.namespace}/{vmexport.metadata.name}' VirtualMachineExport"
+                f"unable to access the manifest info from '{metadata.namespace}/{metadata.name}' VirtualMachineExport"
             )
-
-        for manifest in vmexport.status.links.internal.manifests:
+        for manifest in manifests:
             parsed = urlparse(manifest.url)
             new_url = parsed._replace(netloc=vme_info.service_url)
             res[manifest.type] = urlunparse(new_url)
@@ -415,9 +433,6 @@ async def print_request_body(
     manifest_url: str,
     headers: dict,
 ) -> None:
-    if not manifest_url:
-        raise ValueError("Manifest URL is empty")
-
     token = await get_token_from_secret(client, vmexport)
     headers = headers.copy()
     headers[EXPORT_TOKEN_HEADER] = token
@@ -429,8 +444,8 @@ async def print_request_body(
                     raise RuntimeError(f"Failed to fetch manifest: HTTP {resp.status}")
                 content = await resp.text()
 
-        if getattr(vme_info, "output_file", None):
-            with open(vme_info.output_file, "w", encoding="utf-8") as f:
+        if output_file := vme_info.output_file:
+            with open(output_file, "w", encoding="utf-8") as f:
                 f.write(content)
         else:
             print(content)
@@ -461,26 +476,23 @@ async def download_volume(
     vmexport: V1beta1VirtualMachineExport,
     vme_info: VMExportInfo,
     console: Console,
+    dest_path: Path,
     chunk_size: int = CHUNK_SIZE_DEFAULT,
 ) -> None:
     url = await get_url_from_vmexport(vmexport, vme_info)
     token = await get_token_from_secret(client, vmexport)
 
     attempt = 0
-    final_dest = (
-        vme_info.output_file.with_suffix("")
-        if vme_info.decompress
-        else vme_info.output_file
-    )
 
     while attempt <= vme_info.download_retries:
         try:
             headers = {EXPORT_TOKEN_HEADER: token}
-            timeout = aiohttp.ClientTimeout(total=60)
+
+            timeout = aiohttp.ClientTimeout(total=None, connect=60, sock_read=300)
 
             connector = aiohttp.TCPConnector(ssl=not vme_info.insecure)
             async with aiohttp.ClientSession(
-                timeout=timeout, connector=connector
+                connector=connector, timeout=timeout
             ) as session:
                 async with session.get(url, headers=headers) as resp:
                     if resp.status in TRANSIENT_HTTP_STATUSES:
@@ -502,23 +514,32 @@ async def download_volume(
                                 _, _, total = parsed
                                 total_size = total
 
+                    is_ci = (
+                        os.getenv("GITHUB_ACTIONS") == "true" or not console.is_terminal
+                    )
+
                     with Progress(
-                        TextColumn("[bold blue]{task.fields[filename]}"),
-                        BarColumn(),
+                        SpinnerColumn() if not is_ci else TextColumn("•"),
+                        TextColumn(
+                            "[bold blue]Downloading vm disk image...[/bold blue]"
+                        ),
                         DownloadColumn(),
                         TransferSpeedColumn(),
                         TimeRemainingColumn(),
                         console=console,
                         transient=False,
+                        auto_refresh=not is_ci,
                     ) as dl_progress:
                         task_id = dl_progress.add_task(
                             "download",
-                            filename=vme_info.output_file.name,
+                            filename=cast(Path, vme_info.output_file).name,
                             total=total_size,
                         )
 
+                        last_refresh = time.time()
+
                         if vme_info.decompress:
-                            async with aiofiles.open(final_dest, "wb") as f_out:
+                            async with aiofiles.open(dest_path, "wb") as f_out:
                                 async with aiogzip.AsyncGzipFile(
                                     filename=None, mode="rb", fileobj=resp.content
                                 ) as gz:
@@ -531,14 +552,23 @@ async def download_volume(
                                         dl_progress.update(
                                             task_id, advance=len(chunk_bytes)
                                         )
+
+                                        if is_ci:
+                                            if time.time() - last_refresh >= 5.0:
+                                                dl_progress.refresh()
+                                                last_refresh = time.time()
                         else:
-                            async with aiofiles.open(final_dest, "wb") as f_out:
+                            async with aiofiles.open(dest_path, "wb") as f_out:
                                 async for chunk in resp.content.iter_chunked(
                                     chunk_size
                                 ):
                                     await f_out.write(chunk)
                                     dl_progress.update(task_id, advance=len(chunk))
 
+                                    if is_ci:
+                                        if time.time() - last_refresh >= 5.0:
+                                            dl_progress.refresh()
+                                            last_refresh = time.time()
             return
 
         except (RetryableDownloadError, aiohttp.ClientConnectorError) as e:
@@ -581,53 +611,97 @@ def convert_to_qcow2(
 ) -> bool:
     tool = "virt-sparsify" if sparsify else "qemu-img"
     if not shutil.which(tool):
-        console.print(
-            f"[bold red]error: '{tool}' not found in PATH. Cannot convert.[/bold red]"
-        )
+        console.print(f"[bold red]Error: '{tool}' not found in PATH.[/bold red]")
         return False
-    console.print(
-        f"[yellow]converting {source.name} to QCOW2 (this may take a while)...[/yellow]"
-    )
+
+    if sparsify:
+        cmd = [
+            "virt-sparsify",
+            "--machine-readable",
+            "--convert",
+            "qcow2",
+            "--compress",
+            str(source),
+            str(dest),
+        ]
+    else:
+        cmd = [
+            "qemu-img",
+            "convert",
+            "-p",
+            "-f",
+            "raw",
+            "-O",
+            "qcow2",
+            "-c",
+            str(source),
+            str(dest),
+        ]
+
     try:
-        if sparsify:
-            subprocess.run(
-                [
-                    "virt-sparsify",
-                    "--convert",
-                    "qcow2",
-                    "--compress",
-                    str(source),
-                    str(dest),
-                ],
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
+        is_ci = os.getenv("GITHUB_ACTIONS") == "true" or not console.is_terminal
+
+        with Progress(
+            SpinnerColumn() if not is_ci else TextColumn("•"),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TimeRemainingColumn(),
+            console=console,
+            transient=False,
+            auto_refresh=not is_ci,
+        ) as progress:
+            task_id = progress.add_task(f"Converting image to qcow2 format", total=100)
+
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                universal_newlines=True,
             )
-        else:
-            subprocess.run(
-                [
-                    "qemu-img",
-                    "convert",
-                    "-f",
-                    "raw",
-                    "-O",
-                    "qcow2",
-                    "-c",
-                    str(source),
-                    str(dest),
-                ],
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-            )
+
+            qemu_re = re.compile(r"\((\d+\.\d+)/100%\)")
+            sparsify_re = re.compile(r"progress:\s+(\d+)/100")
+
+            last_refresh = time.time()
+
+            if process.stdout is not None:
+                for line in process.stdout:
+                    clean_line = line.strip()
+                    if not clean_line:
+                        continue
+
+                    if sparsify:
+                        match = sparsify_re.search(clean_line)
+                        if match:
+                            progress.update(task_id, completed=float(match.group(1)))
+                        else:
+                            progress.update(
+                                task_id, description=f"[dim]{clean_line[:50]}..."
+                            )
+                    else:
+                        match = qemu_re.search(clean_line)
+                        if match:
+                            progress.update(task_id, completed=float(match.group(1)))
+
+                    if is_ci:
+                        if time.time() - last_refresh >= 5.0:
+                            progress.refresh()
+                            last_refresh = time.time()
+
+            process.wait()
+
+            if process.returncode != 0:
+                console.print(
+                    f"[bold red]Conversion failed with exit code {process.returncode}[/bold red]"
+                )
+                return False
+
+        console.print(f"[green]✓ Successfully converted to {dest.name}[/green]")
         return True
-    except subprocess.CalledProcessError as e:
-        stderr = (
-            e.stderr.decode()
-            if isinstance(e.stderr, (bytes, bytearray))
-            else str(e.stderr)
-        )
-        console.print(f"[bold red]conversion failed: {stderr}[/bold red]")
+
+    except Exception as e:
+        console.print(f"[bold red]Conversion error: {e}[/bold red]")
         return False
 
 
@@ -815,7 +889,7 @@ async def download(
 
     if not manifest and not output:
         raise typer.BadParameter(
-            "binary output can mess up your terminal. Use '--output <FILE>' when downloading volume."
+            "binary output can mess up your terminal. Use '--output <FILE>' when downloading a volume."
         )
 
     if pvc and manifest:
@@ -828,10 +902,16 @@ async def download(
         kv_conf.host = k8s_conf.host
         kv_conf.verify_ssl = getattr(k8s_conf, "verify_ssl", True)
         kv_conf.ssl_ca_cert = getattr(k8s_conf, "ssl_ca_cert", None)
-        kv_conf.cert_file = getattr(k8s_conf, "cert_file", None)
-        kv_conf.key_file = getattr(k8s_conf, "key_file", None)
 
-        kv_api = DefaultApi(ApiClient(configuration=kv_conf))
+        kv_api_client = ApiClient(configuration=kv_conf)
+
+        if k8s_conf.api_key:
+            token = k8s_conf.api_key.get("BearerToken")
+
+            if token:
+                kv_api_client.default_headers["Authorization"] = token
+
+        kv_api = DefaultApi(kv_api_client)
 
         vme_info = VMExportInfo(
             name=name,
@@ -861,7 +941,7 @@ async def download(
 
         if vme_info.should_create:
             try:
-                console.print("creating VMExport resource...")
+                console.print(f"[yellow]Creating VMExport resource...[/yellow]")
                 await create_export_resource(kv_api, vme_info)
             except VMExportAlreadyExistsError as e:
                 vme_info.keep_vme = True
@@ -892,10 +972,38 @@ async def download(
             await get_virtual_machine_manifest(dyn, vme, vme_info)
             raise typer.Exit(0)
 
-        await download_volume(dyn, vme, vme_info, console)
+        output_path = cast(Path, vme_info.output_file)
+        if vme_info.format == "qcow2":
+            download_dest = output_path.with_suffix(output_path.suffix + ".raw")
+
+            await download_volume(dyn, vme, vme_info, console, dest_path=download_dest)
+
+            if convert_to_qcow2(download_dest, output_path, console, vme_info.sparsify):
+                console.print(
+                    f"[green]✓ QCOW2 conversion finished successfully: {output_path}[/green]"
+                )
+                try:
+                    download_dest.unlink(missing_ok=True)
+                    console.print(
+                        f"[dim]✓ Cleaned up source raw image after conversion: {download_dest}[/dim]"
+                    )
+                except Exception as e:
+                    console.print(
+                        f"[yellow]Warning: Could not delete source raw image file after conversion: {download_dest}: {e}[/yellow]"
+                    )
+            else:
+                console.print(
+                    f"[red]! Error: QCOW2 conversion failed. Raw file kept at: {download_dest}[/red]"
+                )
+                raise typer.Exit(1)
+        else:
+            await download_volume(dyn, vme, vme_info, console, dest_path=output_path)
+            console.print(
+                f"[green]✓ {output_path} (format: {vme_info.format.upper()}) downloaded successfully.[/green]"
+            )
 
         if should_delete_vmexport(vme_info):
-            console.print("[dim]Deleting VMExport...[/dim]")
+            console.print("[dim]Deleting VMExport resource...[/dim]")
             try:
                 await asyncio.to_thread(
                     kv_api.delete_namespaced_virtual_machine_export,
@@ -904,4 +1012,6 @@ async def download(
                     body=K8sIoApimachineryPkgApisMetaV1DeleteOptions(),
                 )
             except Exception as e:
-                console.print(f"[yellow]Failed to delete VMExport: {e}[/yellow]")
+                console.print(
+                    f"[yellow]Warning: Failed to delete VMExport resource: {e}[/yellow]"
+                )
