@@ -25,7 +25,7 @@ dependencies = [
     "typer==0.21.0",
     "kubevirt-py==1.7.0",
     "validators==0.35.0",
-    "mypy-boto3-s3==1.42.16"
+    "mypy-boto3-s3==1.42.21"
 ]
 
 [project.scripts]
