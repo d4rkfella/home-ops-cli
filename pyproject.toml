@@ -13,7 +13,7 @@ dependencies = [
     "ruamel.yaml==0.19.1",
     "kubernetes-asyncio==34.3.3",
     "kr8s==0.20.14",
-    "aiohttp==3.13.2",
+    "aiohttp==3.13.3",
     "aiofiles==25.1.0",
     "aiogzip==1.1.0",
     "textual==7.3.0",
