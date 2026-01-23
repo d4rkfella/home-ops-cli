@@ -7,6 +7,10 @@ RUN groupadd -g 65532 nonroot \
 
 RUN pip install --no-cache-dir home-ops-cli==${CLI_VERSION}
 
+COPY dist/*.whl /tmp/
+RUN pip install --no-cache-dir /tmp/*.whl \
+    && rm -f /tmp/*.whl
+
 USER nonroot
 
 ENTRYPOINT ["home-ops-cli"]
