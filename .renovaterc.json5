@@ -1,0 +1,25 @@
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  extends: [
+    'config:recommended',
+    'docker:enableMajor',
+    'customManagers:dockerfileVersions',
+    'helpers:pinGitHubActionDigests',
+    ':disableRateLimiting',
+    ':dependencyDashboard',
+    ':semanticCommits',
+    ':timezone(Europe/Sofia)',
+  ],
+  dependencyDashboardTitle: 'Renovate Dashboard 🤖',
+  suppressNotifications: [
+    'prEditedNotification',
+    'prIgnoreNotification',
+  ],
+  ignorePaths: [
+    '**/resources/**',
+  ],
+  pip_requirements: {
+    enabled: true,
+    managerFilePatterns: ["(^|/)pyproject([-.]\\w+)?\\.toml$"],
+  },
+}
