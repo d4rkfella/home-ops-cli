@@ -16,7 +16,7 @@ dependencies = [
     "aiohttp==3.13.2",
     "aiofiles==25.1.0",
     "aiogzip==1.1.0",
-    "textual==6.11.0",
+    "textual==7.3.0",
     "boto3==1.42.19",
     "botocore[crt]",
     "inquirer==3.4.1",
