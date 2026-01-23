@@ -1,22 +1,20 @@
-import asyncio
+from __future__ import annotations
+
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import typer
-from kubernetes_asyncio import watch
-from rich.progress import (
-    BarColumn,
-    Progress,
-    SpinnerColumn,
-    TaskID,
-    TaskProgressColumn,
-    TextColumn,
-    TimeElapsedColumn,
-)
 from typing_extensions import Annotated
 
-from ..utils import async_command, dynamic_client
+if TYPE_CHECKING:
+    from rich.progress import (
+        Progress,
+        TaskID,
+    )
+
+from ..utils import async_command
 
 
 @dataclass(frozen=True)
@@ -109,6 +107,8 @@ async def wait_for_resources_group(
     if not resources:
         return
 
+    from kubernetes_asyncio import watch
+
     first = next(iter(resources))
     kind = first.kind
     api_version = first.api_version
@@ -143,6 +143,8 @@ async def wait_for_resources_group(
 
                 if not remaining:
                     break
+
+    import asyncio
 
     try:
         await asyncio.wait_for(_watch_loop(), timeout=timeout)
@@ -181,6 +183,17 @@ async def wait(
     ],
     timeout: Annotated[int, typer.Option(help="Timeout in seconds")] = 240,
 ):
+    from rich.progress import (
+        BarColumn,
+        Progress,
+        SpinnerColumn,
+        TaskProgressColumn,
+        TextColumn,
+        TimeElapsedColumn,
+    )
+
+    from ..utils import dynamic_client
+
     async with dynamic_client() as dyn:
         parsed_resources = {res for r in resources for res in parse_resource(r)}
 
@@ -207,6 +220,7 @@ async def wait(
                 "Waiting for all resources to become ready ...",
                 total=len(parsed_resources),
             )
+            import asyncio
 
             await asyncio.gather(
                 *(

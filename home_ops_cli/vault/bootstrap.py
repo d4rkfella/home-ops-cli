@@ -1,10 +1,7 @@
 import os
 import time
 
-import hvac
 import typer
-from click.core import ParameterSource
-from hvac.exceptions import InvalidRequest
 
 from ..options import (
     AwsAccessKeyIdOption,
@@ -21,7 +18,6 @@ from ..options import (
     VaultSnapshotNameOption,
     VaultSnapshotNameRegexOption,
 )
-from .restore_raft_snapshot import restore_raft_snapshot
 
 app = typer.Typer()
 
@@ -45,6 +41,10 @@ def bootstrap(
     aws_endpoint_url: AwsEndpointUrlOption = None,
     aws_region: AwsRegionOption = "us-east-1",
 ):
+    import hvac
+    from click.core import ParameterSource
+    from hvac.exceptions import InvalidRequest
+
     if ctx.get_parameter_source("vault_address") == ParameterSource.COMMANDLINE:
         os.environ["VAULT_ADDR"] = vault_address
 
@@ -101,6 +101,8 @@ def bootstrap(
                 raise typer.Exit(code=1)
 
         typer.echo("Vault is unsealed and ready. Starting restore...")
+
+        from .restore_raft_snapshot import restore_raft_snapshot
 
         restore_raft_snapshot(
             ctx=ctx,

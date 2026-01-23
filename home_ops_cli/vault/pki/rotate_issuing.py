@@ -1,13 +1,8 @@
 import os
 from typing import Any
 
-import hvac
-import typer
-from click.core import ParameterSource
-from cryptography import x509
-from cryptography.hazmat.backends import default_backend
-from hvac.exceptions import InvalidPath, InvalidRequest, VaultError
 from requests import Response
+from typer import Context, Exit, Typer, colors, echo, secho
 
 from ...options import (
     VaultAddressOption,
@@ -16,9 +11,8 @@ from ...options import (
     VaultSkipVerifyOption,
     VaultTokenOption,
 )
-from ...utils import handle_vault_authentication
 
-app = typer.Typer()
+app = Typer()
 
 
 def to_dict(resp: dict[str, Any] | Response | None) -> dict[str, Any]:
@@ -31,7 +25,7 @@ def to_dict(resp: dict[str, Any] | Response | None) -> dict[str, Any]:
 
 @app.command()
 def rotate_issuing(
-    ctx: typer.Context,
+    ctx: Context,
     vault_address: VaultAddressOption,
     vault_token: VaultTokenOption = None,
     vault_ca_cert: VaultCACertOption = None,
@@ -42,6 +36,8 @@ def rotate_issuing(
     INT_MOUNT = "pki_int"
     COMMON_NAME = "DarkfellaNET Issuing CA v1.1.1"
     TTL = "8760h"
+
+    from click.core import ParameterSource
 
     if (
         vault_address
@@ -54,6 +50,11 @@ def rotate_issuing(
         and ctx.get_parameter_source("vault_token") == ParameterSource.COMMANDLINE
     ):
         os.environ["VAULT_TOKEN"] = vault_token
+
+    import hvac
+    from hvac.exceptions import InvalidPath, InvalidRequest, VaultError
+
+    from ...utils import handle_vault_authentication
 
     vault_client = handle_vault_authentication(
         hvac.Client(
@@ -69,11 +70,11 @@ def rotate_issuing(
     )
 
     if vault_client.sys.is_sealed():
-        typer.secho("Vault is sealed. Cannot proceed..", fg=typer.colors.RED, bold=True)
-        raise typer.Exit(code=1)
+        secho("Vault is sealed. Cannot proceed..", fg=colors.RED, bold=True)
+        raise Exit(code=1)
 
     try:
-        typer.echo("Generating CSR using existing key material...")
+        echo("Generating CSR using existing key material...")
         generate_resp = to_dict(
             vault_client.write(
                 f"{ISS_MOUNT}/issuers/generate/intermediate/existing",
@@ -88,11 +89,11 @@ def rotate_issuing(
         )
         csr = generate_resp["data"]["csr"]
     except (VaultError, InvalidRequest) as e:
-        typer.echo(f"Failed to generate CSR: {e}")
-        raise typer.Exit(1)
+        echo(f"Failed to generate CSR: {e}")
+        raise Exit(1)
 
     try:
-        typer.echo("Signing CSR with intermediate CA...")
+        echo("Signing CSR with intermediate CA...")
         sign_resp = to_dict(
             vault_client.write(
                 f"{INT_MOUNT}/root/sign-intermediate",
@@ -108,11 +109,11 @@ def rotate_issuing(
         )
         signed_cert = sign_resp["data"]["certificate"]
     except (VaultError, InvalidRequest) as e:
-        typer.echo(f"Failed to sign CSR: {e}")
-        raise typer.Exit(1)
+        echo(f"Failed to sign CSR: {e}")
+        raise Exit(1)
 
     try:
-        typer.echo(f"Importing signed certificate back into {ISS_MOUNT}...")
+        echo(f"Importing signed certificate back into {ISS_MOUNT}...")
         import_resp = to_dict(
             vault_client.write(
                 f"{ISS_MOUNT}/intermediate/set-signed",
@@ -128,15 +129,18 @@ def rotate_issuing(
         vault_client.write(
             f"{ISS_MOUNT}/config/issuers", default=new_issuer_id, wrap_ttl=None
         )
-        typer.echo(f"New issuer {new_issuer_id} set as default")
+        echo(f"New issuer {new_issuer_id} set as default")
     except (VaultError, InvalidRequest, InvalidPath) as e:
-        typer.echo(f"Failed to import signed certificate: {e}")
-        raise typer.Exit(1)
+        echo(f"Failed to import signed certificate: {e}")
+        raise Exit(1)
+
+    from cryptography import x509
+    from cryptography.hazmat.backends import default_backend
 
     cert = x509.load_pem_x509_certificate(signed_cert.encode(), default_backend())
-    typer.echo("\nNew Issuing CA info:")
-    typer.echo(f"  Subject: {cert.subject.rfc4514_string()}")
-    typer.echo(f"  Serial: {cert.serial_number}")
-    typer.echo(f"  Expires: {cert.not_valid_after.isoformat()} UTC")
+    echo("\nNew Issuing CA info:")
+    echo(f"  Subject: {cert.subject.rfc4514_string()}")
+    echo(f"  Serial: {cert.serial_number}")
+    echo(f"  Expires: {cert.not_valid_after.isoformat()} UTC")
 
-    typer.echo("Done! Issuing CA successfully reissued and set as default.")
+    echo("Done! Issuing CA successfully reissued and set as default.")

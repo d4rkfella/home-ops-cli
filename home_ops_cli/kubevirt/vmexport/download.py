@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import os
 import re
 import shutil
 import subprocess
@@ -10,38 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
 from urllib.parse import urlparse, urlunparse
-import os
 
-import aiofiles
-import aiogzip
-import aiohttp
 import typer
-from kr8s.objects import object_from_spec
-from kr8s.portforward import PortForward
-from kubernetes_asyncio import client  # type: ignore
-from kubernetes_asyncio.client.exceptions import ApiException  # type: ignore
-from kubernetes_asyncio.dynamic import DynamicClient  # type: ignore
-from kubevirt import ApiClient, Configuration, DefaultApi
-from kubevirt.models import (
-    K8sIoApiCoreV1TypedLocalObjectReference,
-    K8sIoApimachineryPkgApisMetaV1DeleteOptions,
-    K8sIoApimachineryPkgApisMetaV1ObjectMeta,
-    V1beta1VirtualMachineExport,
-    V1beta1VirtualMachineExportSpec,
-    V1beta1VirtualMachineExportStatus,
-)
-from kubevirt.rest import ApiException as KubeVirtApiException
-from textual.color import Gradient
-from rich.console import Console
-from rich.progress import (
-    BarColumn,
-    DownloadColumn,
-    Progress,
-    SpinnerColumn,
-    TextColumn,
-    TimeRemainingColumn,
-    TransferSpeedColumn,
-)
 from typing_extensions import Annotated
 
 from ...exceptions import RetryableDownloadError, VMExportAlreadyExistsError
@@ -51,13 +22,17 @@ VMImageFormat = Literal["gzip", "raw", "qcow2"]
 ManifestFormat = Literal["yaml", "json"]
 
 
-GRADIENT = Gradient(
-    (0.0, "#A00000"),
-    (0.33, "#FF7300"),
-    (0.66, "#4caf50"),
-    (1.0, "#8bc34a"),
-    quality=50,
-)
+def _get_gradient():
+    """Lazy load gradient to avoid importing textual.color at module level."""
+    from textual.color import Gradient
+
+    return Gradient(
+        (0.0, "#A00000"),
+        (0.33, "#FF7300"),
+        (0.66, "#4caf50"),
+        (1.0, "#8bc34a"),
+        quality=50,
+    )
 
 
 @dataclass
@@ -82,7 +57,7 @@ class VMExportInfo:
     include_secret: bool
     decompress: bool
     port_forward: bool
-    export_source: K8sIoApiCoreV1TypedLocalObjectReference | None
+    export_source: Any | None
     labels: dict[str, str]
     annotations: dict[str, str]
 
@@ -99,6 +74,9 @@ EXPORT_TOKEN_HEADER = "x-kubevirt-export-token"
 
 
 async def wait_for_service(dyn, namespace: str, service_name: str, timeout: int = 30):
+    """Wait for a Kubernetes service to be ready."""
+    from kubernetes_asyncio.client.exceptions import ApiException
+
     for _ in range(timeout):
         try:
             svc = await dyn.resources.get(api_version="v1", kind="Service")
@@ -113,6 +91,7 @@ async def wait_for_service(dyn, namespace: str, service_name: str, timeout: int 
 
 
 async def get_pod_for_service(dyn, namespace: str, service):
+    """Get the pod associated with a service."""
     selector = service.spec.selector
     selector_str = ",".join([f"{k}={v}" for k, v in selector.items()])
     pods_res = await dyn.resources.get(api_version="v1", kind="Pod")
@@ -125,6 +104,7 @@ async def get_pod_for_service(dyn, namespace: str, service):
 async def translate_service_port_to_target_port(
     service: Any, pod: Any, remote_port: int | str, local_port: int
 ) -> int:
+    """Translate service port to target container port."""
     service_port_obj = None
     remote_port_str = str(remote_port)
 
@@ -164,7 +144,11 @@ async def translate_service_port_to_target_port(
     return int(service_port_obj.port)
 
 
-async def setup_port_forward(dyn, vme_info: VMExportInfo) -> PortForward:
+async def setup_port_forward(dyn, vme_info: VMExportInfo):
+    """Setup port forwarding for VMExport service."""
+    from kr8s.objects import object_from_spec
+    from kr8s.portforward import PortForward
+
     service_name = f"virt-export-{vme_info.name}"
     service = await wait_for_service(dyn, vme_info.namespace, service_name)
 
@@ -191,9 +175,17 @@ async def setup_port_forward(dyn, vme_info: VMExportInfo) -> PortForward:
 
 
 async def create_export_resource(
-    kv_api: DefaultApi,
+    kv_api,
     vme_info: VMExportInfo,
-) -> V1beta1VirtualMachineExport:
+):
+    """Create a VirtualMachineExport resource."""
+    from kubevirt.models import (
+        K8sIoApimachineryPkgApisMetaV1ObjectMeta,
+        V1beta1VirtualMachineExport,
+        V1beta1VirtualMachineExportSpec,
+    )
+    from kubevirt.rest import ApiException as KubeVirtApiException
+
     export_body = V1beta1VirtualMachineExport(
         api_version="export.kubevirt.io/v1beta1",
         kind="VirtualMachineExport",
@@ -210,13 +202,10 @@ async def create_export_resource(
     )
 
     try:
-        return cast(
-            V1beta1VirtualMachineExport,
-            await asyncio.to_thread(
-                kv_api.create_namespaced_virtual_machine_export,
-                namespace=vme_info.namespace,
-                body=export_body,
-            ),
+        return await asyncio.to_thread(
+            kv_api.create_namespaced_virtual_machine_export,
+            namespace=vme_info.namespace,
+            body=export_body,
         )
     except KubeVirtApiException as e:
         if getattr(e, "status", None) == 409:
@@ -226,9 +215,8 @@ async def create_export_resource(
         raise
 
 
-async def get_token_from_secret(
-    client: DynamicClient, vmexport: V1beta1VirtualMachineExport
-) -> str:
+async def get_token_from_secret(client, vmexport) -> str:
+    """Extract authentication token from Kubernetes secret."""
     if vmexport.status and vmexport.status.token_secret_ref:
         secret_name = vmexport.status.token_secret_ref
     else:
@@ -239,9 +227,7 @@ async def get_token_from_secret(
     try:
         secret_resource = await secrets_api.get(
             name=secret_name,
-            namespace=cast(
-                K8sIoApimachineryPkgApisMetaV1ObjectMeta, vmexport.metadata
-            ).namespace,
+            namespace=vmexport.metadata.namespace,
         )
     except Exception as e:
         raise RuntimeError(f"Error fetching secret '{secret_name}': {e}")
@@ -253,17 +239,15 @@ async def get_token_from_secret(
     return base64.b64decode(token_b64).decode("utf-8")
 
 
-async def get_virtual_machine_export(
-    kv_api: DefaultApi, vme_info: VMExportInfo
-) -> V1beta1VirtualMachineExport | None:
+async def get_virtual_machine_export(kv_api, vme_info: VMExportInfo):
+    """Retrieve a VirtualMachineExport resource."""
+    from kubevirt.rest import ApiException as KubeVirtApiException
+
     try:
-        return cast(
-            V1beta1VirtualMachineExport,
-            await asyncio.to_thread(
-                kv_api.read_namespaced_virtual_machine_export,
-                vme_info.name,
-                vme_info.namespace,
-            ),
+        return await asyncio.to_thread(
+            kv_api.read_namespaced_virtual_machine_export,
+            vme_info.name,
+            vme_info.namespace,
         )
     except KubeVirtApiException as e:
         if getattr(e, "status", None) == 404:
@@ -272,10 +256,14 @@ async def get_virtual_machine_export(
 
 
 async def wait_for_export_ready(
-    kv_api: DefaultApi,
+    kv_api,
     vme_info: VMExportInfo,
-    console: Console | None = None,
+    console=None,
 ):
+    """Wait for VMExport to reach Ready state."""
+    from rich.console import Console
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+
     console = console or Console()
 
     is_ci = os.getenv("GITHUB_ACTIONS") == "true" or not console.is_terminal
@@ -335,6 +323,7 @@ async def wait_for_export_ready(
 
 
 def _replace_url_with_service_url(manifest_url: str, service_url: str | None) -> str:
+    """Replace URL netloc with service URL if provided."""
     if service_url:
         parsed = urlparse(manifest_url)
         parsed = parsed._replace(netloc=service_url)
@@ -342,16 +331,15 @@ def _replace_url_with_service_url(manifest_url: str, service_url: str | None) ->
     return manifest_url
 
 
-async def get_url_from_vmexport(
-    vmexport: V1beta1VirtualMachineExport, vme_info: VMExportInfo
-) -> str:
-    status = cast(V1beta1VirtualMachineExportStatus, vmexport.status)
+async def get_url_from_vmexport(vmexport, vme_info: VMExportInfo) -> str:
+    """Extract download URL from VMExport status."""
+    status = vmexport.status
     if vme_info.service_url:
         links = getattr(status.links, "internal", None)
     else:
         links = getattr(status.links, "external", None)
 
-    metadata = cast(K8sIoApimachineryPkgApisMetaV1ObjectMeta, vmexport.metadata)
+    metadata = vmexport.metadata
 
     if not links or not getattr(links, "volumes", None):
         raise ValueError(
@@ -392,13 +380,12 @@ async def get_url_from_vmexport(
     return download_url
 
 
-def get_manifest_urls_from_vmexport(
-    vmexport: V1beta1VirtualMachineExport, vme_info: VMExportInfo
-):
+def get_manifest_urls_from_vmexport(vmexport, vme_info: VMExportInfo):
+    """Extract manifest URLs from VMExport status."""
     res = {}
 
-    status = cast(V1beta1VirtualMachineExportStatus, vmexport.status)
-    metadata = cast(K8sIoApimachineryPkgApisMetaV1ObjectMeta, vmexport.metadata)
+    status = vmexport.status
+    metadata = vmexport.metadata
     if not vme_info.service_url:
         links = getattr(status, "links", None)
         external = getattr(links, "external", None) if links else None
@@ -427,12 +414,15 @@ def get_manifest_urls_from_vmexport(
 
 
 async def print_request_body(
-    client: DynamicClient,
-    vmexport: V1beta1VirtualMachineExport,
+    client,
+    vmexport,
     vme_info: VMExportInfo,
     manifest_url: str,
     headers: dict,
 ) -> None:
+    """Fetch and print manifest content."""
+    import aiohttp
+
     token = await get_token_from_secret(client, vmexport)
     headers = headers.copy()
     headers[EXPORT_TOKEN_HEADER] = token
@@ -454,7 +444,8 @@ async def print_request_body(
         raise RuntimeError(f"Error fetching or printing manifest: {e}") from e
 
 
-async def get_virtual_machine_manifest(client: DynamicClient, vmexport, vme_info):
+async def get_virtual_machine_manifest(client, vmexport, vme_info):
+    """Retrieve and output VM manifest."""
     manifest_dict = get_manifest_urls_from_vmexport(vmexport, vme_info)
     if not manifest_dict:
         raise RuntimeError("Failed to get manifest dictionary from VMExport")
@@ -472,13 +463,26 @@ async def get_virtual_machine_manifest(client: DynamicClient, vmexport, vme_info
 
 
 async def download_volume(
-    client: DynamicClient,
-    vmexport: V1beta1VirtualMachineExport,
+    client,
+    vmexport,
     vme_info: VMExportInfo,
-    console: Console,
+    console,
     dest_path: Path,
     chunk_size: int = CHUNK_SIZE_DEFAULT,
 ) -> None:
+    """Download volume from VMExport."""
+    import aiofiles
+    import aiogzip
+    import aiohttp
+    from rich.progress import (
+        DownloadColumn,
+        Progress,
+        SpinnerColumn,
+        TextColumn,
+        TimeRemainingColumn,
+        TransferSpeedColumn,
+    )
+
     url = await get_url_from_vmexport(vmexport, vme_info)
     token = await get_token_from_secret(client, vmexport)
 
@@ -606,9 +610,16 @@ async def download_volume(
             raise
 
 
-def convert_to_qcow2(
-    source: Path, dest: Path, console: Console, sparsify: bool = True
-) -> bool:
+def convert_to_qcow2(source: Path, dest: Path, console, sparsify: bool = True) -> bool:
+    """Convert raw image to qcow2 format."""
+    from rich.progress import (
+        BarColumn,
+        Progress,
+        SpinnerColumn,
+        TextColumn,
+        TimeRemainingColumn,
+    )
+
     tool = "virt-sparsify" if sparsify else "qemu-img"
     if not shutil.which(tool):
         console.print(f"[bold red]Error: '{tool}' not found in PATH.[/bold red]")
@@ -706,6 +717,7 @@ def convert_to_qcow2(
 
 
 def parse_labels_annotations(items: list[str]) -> dict[str, str]:
+    """Parse label/annotation strings into dict."""
     result = {}
     for item in items:
         if "=" in item:
@@ -715,6 +727,7 @@ def parse_labels_annotations(items: list[str]) -> dict[str, str]:
 
 
 def convert_list_to_dict(items: list[str]) -> dict[str, str]:
+    """Convert list of key=value strings to dict."""
     result: dict[str, str] = {}
     for item in items:
         if "=" in item:
@@ -723,9 +736,10 @@ def convert_list_to_dict(items: list[str]) -> dict[str, str]:
     return result
 
 
-def get_export_source(
-    vm: str | None, snapshot: str | None, pvc: str | None
-) -> K8sIoApiCoreV1TypedLocalObjectReference | None:
+def get_export_source(vm: str | None, snapshot: str | None, pvc: str | None):
+    """Create export source reference based on resource type."""
+    from kubevirt.models import K8sIoApiCoreV1TypedLocalObjectReference
+
     if vm:
         return K8sIoApiCoreV1TypedLocalObjectReference(
             api_group="kubevirt.io",
@@ -749,6 +763,7 @@ def get_export_source(
 
 
 def should_delete_vmexport(vme_info: VMExportInfo) -> bool:
+    """Determine if VMExport should be deleted after operation."""
     return not vme_info.export_manifest and (
         vme_info.delete_vme or (vme_info.should_create and not vme_info.keep_vme)
     )
@@ -883,6 +898,12 @@ async def download(
         ),
     ] = False,
 ):
+    """Download command implementation."""
+    from kubernetes_asyncio import client
+    from kubevirt import ApiClient, Configuration, DefaultApi
+    from kubevirt.models import K8sIoApimachineryPkgApisMetaV1DeleteOptions
+    from rich.console import Console
+
     console = Console()
     if delete_vme and keep_vme:
         raise typer.BadParameter("Cannot specify both --delete-vme and --keep-vme")

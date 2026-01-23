@@ -1,16 +1,18 @@
+from __future__ import annotations
+
 import datetime
 import hashlib
 import io
 import os
 import tarfile
 from enum import Enum
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
-import boto3
-import hvac
+if TYPE_CHECKING:
+    from requests import Response
+
 import typer
 from click.core import ParameterSource
-from requests import Response
 
 from ..options import (
     AwsAccessKeyIdOption,
@@ -34,6 +36,8 @@ app = typer.Typer()
 
 
 class S3ChecksumAlgorithm(str, Enum):
+    """S3 checksum algorithms for upload verification."""
+
     CRC32 = "CRC32"
     CRC32C = "CRC32C"
     SHA1 = "SHA1"
@@ -42,6 +46,7 @@ class S3ChecksumAlgorithm(str, Enum):
 
 
 def parse_sha256sums(content: bytes) -> dict[str, str]:
+    """Parse SHA256SUMS file content into a dictionary."""
     sums = {}
     lines = content.strip().split(b"\n")
     for line in lines:
@@ -57,6 +62,7 @@ def parse_sha256sums(content: bytes) -> dict[str, str]:
 
 
 def verify_internal_checksums(snapshot_data: bytes):
+    """Verify internal checksums of files in the Vault Raft snapshot."""
     typer.echo("Starting snapshot checksum verification...")
     snapshot_stream = io.BytesIO(snapshot_data)
 
@@ -134,6 +140,10 @@ def backup_raft_snapshot(
         typer.Option(help="The algorithm to use for s3 transport checksum."),
     ] = S3ChecksumAlgorithm.CRC64NVME,
 ):
+    """Backup Vault Raft snapshot to S3."""
+    import boto3
+    import hvac
+
     if (
         aws_endpoint_url
         and ctx.get_parameter_source("aws_endpoint_url") == ParameterSource.COMMANDLINE

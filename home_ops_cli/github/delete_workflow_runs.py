@@ -4,20 +4,10 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-import aiohttp
-import inquirer
 import typer
-from inquirer.themes import RedSolace
-from rich.console import Console
-from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
 from typing_extensions import Annotated
 
-from ..utils import (
-    async_command,
-    send_gh_request,
-    validate_github_token,
-    validate_repo_format,
-)
+from ..utils import async_command, validate_github_token, validate_repo_format
 
 
 class WorkflowStatus(str, Enum):
@@ -65,6 +55,8 @@ async def delete_workflow_runs(
         ),
     ] = False,
 ):
+    import aiohttp
+
     headers = {
         "Authorization": f"token {token}",
         "Accept": "application/vnd.github.v3+json",
@@ -80,7 +72,11 @@ async def delete_workflow_runs(
         if status:
             initial_params["status"] = status.value
 
+        from rich.console import Console
+
         console = Console()
+
+        from ..utils import send_gh_request
 
         initial_data = await send_gh_request(
             session, "GET", api_base_url, console=console, params=initial_params
@@ -94,6 +90,8 @@ async def delete_workflow_runs(
             raise typer.Exit()
 
         pages_needed = (runs_to_fetch + per_page - 1) // per_page
+
+        from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
 
         with Progress(
             TextColumn("[bold blue]{task.description}"),
@@ -188,6 +186,8 @@ async def delete_workflow_runs(
                 if text.lower() in choice_tuple[0].lower()
             ]
 
+        import inquirer
+
         questions = [
             inquirer.Checkbox(
                 "selected_runs",
@@ -197,6 +197,8 @@ async def delete_workflow_runs(
                 autocomplete=autocomplete_runs,
             )
         ]
+        from inquirer.themes import RedSolace
+
         answers = inquirer.prompt(questions, theme=RedSolace())
 
         if not answers:

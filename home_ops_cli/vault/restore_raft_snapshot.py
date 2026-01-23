@@ -1,16 +1,13 @@
+from __future__ import annotations
+
 import os
 import re
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import cast
 
-import boto3
-import botocore.exceptions
-import hvac
 import typer
-from click.core import ParameterSource
 from dateutil.parser import parse as parse_datetime
-from hvac.api.system_backend import Raft
 
 from ..options import (
     AwsAccessKeyIdOption,
@@ -31,7 +28,6 @@ from ..options import (
     VaultSnapshotNameRegexOption,
     VaultTokenOption,
 )
-from ..utils import handle_vault_authentication
 
 app = typer.Typer()
 
@@ -101,6 +97,14 @@ def restore_raft_snapshot(
     vault_ca_path: VaultCAPathOption = None,
     vault_skip_verify: VaultSkipVerifyOption = False,
 ):
+    import boto3
+    import botocore.exceptions
+    import hvac
+    from click.core import ParameterSource
+    from hvac.api.system_backend import Raft
+
+    from ..utils import handle_vault_authentication
+
     if filename and filename_regex:
         raise typer.BadParameter("filename and filename-regex are mutually exclusive")
 

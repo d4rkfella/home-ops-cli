@@ -1,26 +1,24 @@
 from pathlib import Path
 
-import aiohttp
-import typer
-from ruamel.yaml import YAML
+from typer import Exit, Option, Typer, echo
 from typing_extensions import Annotated
 
 from ..utils import async_command
 
-app = typer.Typer()
+app = Typer()
 
 
 @app.command(help="Fetch AWS IP ranges and optionally update a network policy YAML")
 @async_command
 async def fetch_aws_ips(
-    region: Annotated[str, typer.Option(help="AWS region to filter")] = "us-east-1",
-    service: Annotated[str, typer.Option(help="AWS service to filter")] = "AMAZON",
-    output_file: Annotated[
-        Path, typer.Option(help="File to write filtered CIDRs")
-    ] = Path("aws-ip-ranges.txt"),
+    region: Annotated[str, Option(help="AWS region to filter")] = "us-east-1",
+    service: Annotated[str, Option(help="AWS service to filter")] = "AMAZON",
+    output_file: Annotated[Path, Option(help="File to write filtered CIDRs")] = Path(
+        "aws-ip-ranges.txt"
+    ),
     policy_file: Annotated[
         Path | None,
-        typer.Option(
+        Option(
             help="Path to cilium network policy YAML to update",
             exists=True,
             file_okay=True,
@@ -31,9 +29,12 @@ async def fetch_aws_ips(
         ),
     ] = None,
 ) -> None:
+    import aiohttp
+    from ruamel.yaml import YAML
+
     yaml = YAML()
     yaml.preserve_quotes = True
-    typer.echo(f"Fetching IP ranges for region='{region}' and service='{service}'...")
+    echo(f"Fetching IP ranges for region='{region}' and service='{service}'...")
 
     async with aiohttp.ClientSession() as session:
         async with session.get(
@@ -51,10 +52,10 @@ async def fetch_aws_ips(
     )
 
     if not cidrs:
-        typer.echo("No CIDRs found for the specified region and service.")
-        raise typer.Exit()
+        echo("No CIDRs found for the specified region and service.")
+        raise Exit()
 
-    typer.echo(f"Found {len(cidrs)} unique CIDR blocks.")
+    echo(f"Found {len(cidrs)} unique CIDR blocks.")
 
     if policy_file:
         try:
@@ -83,11 +84,11 @@ async def fetch_aws_ips(
                             break
 
             if rule_to_update is None:
-                typer.echo(
+                echo(
                     f"[bold red]Error: Could not find an egress rule in {policy_file} targeting port '{target_port}'. Aborting policy update.[/bold red]",
                     err=True,
                 )
-                raise typer.Exit(code=1)
+                raise Exit(code=1)
 
             egress_cidrs_list = rule_to_update.get("toCIDRSet", [])
             existing_cidrs = {
@@ -103,20 +104,20 @@ async def fetch_aws_ips(
             with open(policy_file, "w") as f:
                 yaml.dump(policy, f)
 
-            typer.echo(
+            echo(
                 f"Updated {policy_file} with {len(all_cidrs)} unique CIDRs in the egress rule targeting port {target_port}."
             )
 
         except Exception as e:
-            typer.echo(
+            echo(
                 f"[bold red]An error occurred during policy file processing: {e}[/bold red]",
                 err=True,
             )
-            raise typer.Exit(code=1)
+            raise Exit(code=1)
 
     else:
         with open(output_file, "w") as f:
             for c in cidrs:
                 f.write(f"- cidr: {c}\n")
 
-        typer.echo(f"Wrote {len(cidrs)} CIDRs to {output_file}.")
+        echo(f"Wrote {len(cidrs)} CIDRs to {output_file}.")

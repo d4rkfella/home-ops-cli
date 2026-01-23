@@ -2,11 +2,7 @@ import os
 from pathlib import Path
 from typing import Annotated, Literal
 
-import hvac
 import typer
-from click.core import ParameterSource
-from rich.console import Console
-from rich.table import Table
 
 from ..options import (
     VaultAddressOption,
@@ -48,14 +44,19 @@ def login(
         ),
     ] = [],
 ):
+    from click.core import ParameterSource
+
     if ctx.get_parameter_source("vault_address") == ParameterSource.COMMANDLINE:
         os.environ["VAULT_ADDR"] = vault_address
+
     kv = {}
     for p in params:
         if "=" not in p:
             raise typer.BadParameter(f"Invalid argument '{p}', expected key=value")
         k, v = p.split("=", 1)
         kv[k] = v
+
+    import hvac
 
     client = hvac.Client(
         verify=(
@@ -100,6 +101,9 @@ def login(
         metadata = token_info.get("metadata") or token_info.get("meta")
         if not no_store:
             TOKEN_FILE.write_text(client.token)
+
+        from rich.console import Console
+        from rich.table import Table
 
         console = Console()
         table = Table("Key", "Value")

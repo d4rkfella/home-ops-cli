@@ -4,13 +4,10 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-import typer
-from ruamel.yaml import YAML
+from typer import Argument, Exit, Option, Typer, echo
 from typing_extensions import Annotated
 
-yaml = YAML()
-
-app = typer.Typer()
+app = Typer()
 
 
 @app.command(
@@ -19,7 +16,7 @@ app = typer.Typer()
 def regen_talosconfig(
     controlplane: Annotated[
         Path,
-        typer.Argument(
+        Argument(
             help="Path to control plane machine configuration",
             exists=True,
             file_okay=True,
@@ -30,22 +27,22 @@ def regen_talosconfig(
     ],
     endpoints: Annotated[
         list[str] | None,
-        typer.Option("--endpoints", "-e", help="control plane endpoints"),
+        Option("--endpoints", "-e", help="control plane endpoints"),
     ] = None,
     nodes: Annotated[
-        list[str] | None, typer.Option("--nodes", "-n", help="nodes endpoints")
+        list[str] | None, Option("--nodes", "-n", help="nodes endpoints")
     ] = None,
     context: Annotated[
-        str, typer.Option(help="context name to use for the new talosconfig")
+        str, Option(help="context name to use for the new talosconfig")
     ] = "default",
-    debug: Annotated[bool, typer.Option(help="enable debugging", is_flag=True)] = False,
+    debug: Annotated[bool, Option(help="enable debugging", is_flag=True)] = False,
     decrypt: Annotated[
         bool,
-        typer.Option(help="decrypt the machine configuration with SOPS", is_flag=True),
+        Option(help="decrypt the machine configuration with SOPS", is_flag=True),
     ] = True,
     output: Annotated[
         Path,
-        typer.Option(
+        Option(
             "--output",
             "-o",
             file_okay=True,
@@ -56,8 +53,12 @@ def regen_talosconfig(
         ),
     ] = Path("talosconfig"),
 ):
+    from ruamel.yaml import YAML
+
+    yaml = YAML()
+
     work_dir = Path(tempfile.mkdtemp(prefix="talos-regen-"))
-    typer.echo(f"🔧 Working directory: {work_dir}")
+    echo(f"🔧 Working directory: {work_dir}")
 
     try:
         if not decrypt:
@@ -79,17 +80,17 @@ def regen_talosconfig(
                 break
 
         if not ca_crt_b64 or not ca_key_b64:
-            typer.echo(
+            echo(
                 "Could not find machine.ca.crt or machine.ca.key in controlplane machine configuration",
                 err=True,
             )
-            raise typer.Exit(code=1)
+            raise Exit(code=1)
 
         ca_crt_path = work_dir / "ca.crt"
         ca_key_path = work_dir / "ca.key"
         ca_crt_path.write_bytes(base64.b64decode(ca_crt_b64))
         ca_key_path.write_bytes(base64.b64decode(ca_key_b64))
-        typer.echo("✅ Extracted CA certificate and key")
+        echo("✅ Extracted CA certificate and key")
 
         subprocess.run(
             ["talosctl", "gen", "key", "--name", "admin"], cwd=work_dir, check=True
@@ -116,7 +117,7 @@ def regen_talosconfig(
             cwd=work_dir,
             check=True,
         )
-        typer.echo("✅ Generated admin key, CSR, and certificate")
+        echo("✅ Generated admin key, CSR, and certificate")
 
         admin_crt_path = work_dir / "admin.crt"
         admin_key_path = work_dir / "admin.key"
@@ -141,11 +142,11 @@ def regen_talosconfig(
         output.parent.mkdir(parents=True, exist_ok=True)
         with output.open("w", encoding="utf-8") as f:
             yaml.dump(config, f)
-        typer.echo(f"✅ Created talosconfig: {output}")
+        echo(f"✅ Created talosconfig: {output}")
 
     finally:
         if not debug:
             shutil.rmtree(work_dir)
-            typer.echo("🧹 Cleaned up temporary files")
+            echo("🧹 Cleaned up temporary files")
         else:
-            typer.echo(f"📁 Temporary files kept in: {work_dir}")
+            echo(f"📁 Temporary files kept in: {work_dir}")
