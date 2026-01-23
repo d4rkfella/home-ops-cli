@@ -12,7 +12,7 @@ dependencies = [
     "hvac==2.4.0",
     "ruamel.yaml==0.19.1",
     "kubernetes-asyncio==34.3.3",
-    "kr8s==0.20.14",
+    "kr8s==0.20.15",
     "aiohttp==3.13.2",
     "aiofiles==25.1.0",
     "aiogzip==1.1.0",
