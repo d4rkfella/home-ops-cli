@@ -10,7 +10,7 @@ authors = [
 requires-python = ">=3.10,<4.0"
 dependencies = [
     "hvac==2.4.0",
-    "ruamel.yaml==0.18.17",
+    "ruamel.yaml==0.19.1",
     "kubernetes-asyncio==34.3.3",
     "kr8s==0.20.14",
     "aiohttp==3.13.2",
