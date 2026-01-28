@@ -354,13 +354,12 @@ def handle_vault_authentication(
     raise typer.Exit(code=1)
 
 
-def create_s3_client(bucket_name: str):
+def create_s3_client(bucket_name: str) -> "S3Client":
     import boto3
     import botocore.exceptions
 
     try:
-        session = boto3.Session()
-        s3_client: S3Client = cast(S3Client, session.client("s3"))
+        s3_client = cast("S3Client", boto3.Session().client("s3"))
         s3_client.head_bucket(Bucket=bucket_name)
         return s3_client
 

@@ -1,6 +1,6 @@
 [project]
 name = "home-ops-cli"
-version = "0.4.52"
+version = "0.4.53"
 description = "A CLI tool for managing home operations tasks."
 readme = "README.md"
 license = { text = "MIT" }
