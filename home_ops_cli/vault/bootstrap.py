@@ -1,5 +1,6 @@
 import os
 import time
+from typing import Any
 
 import typer
 
@@ -43,7 +44,6 @@ def bootstrap(
 ):
     import hvac
     from click.core import ParameterSource
-    from hvac.exceptions import InvalidRequest
 
     if ctx.get_parameter_source("vault_address") == ParameterSource.COMMANDLINE:
         os.environ["VAULT_ADDR"] = vault_address
@@ -59,26 +59,22 @@ def bootstrap(
     )
 
     if not client.sys.is_initialized():
-        typer.echo("Vault is not initialized. Starting initialization sequence...")
+        typer.echo("Vault is not initialized. Starting bootstrap procedure...")
+        seal_status: dict[str, Any] = client.sys.read_seal_status()
+        seal_type = seal_status["type"]
 
-        is_kms = False
-        try:
-            typer.echo("Attempting Auto-Unseal (KMS) initialization...")
+        is_kms = seal_type != "shamir"
+
+        if is_kms:
+            typer.echo(
+                f"Detected Auto-Unseal ({seal_type}). Initializing with recovery keys..."
+            )
             result = client.sys.initialize(recovery_shares=5, recovery_threshold=3)
-            is_kms = True
             typer.echo("Successfully initialized with Auto-Unseal.")
-        except InvalidRequest as e:
-            if (
-                "not applicable to seal type" in str(e).lower()
-                or "secret_shares" in str(e).lower()
-            ):
-                typer.echo(
-                    "KMS not supported by this instance. Falling back to Shamir initialization..."
-                )
-                result = client.sys.initialize(secret_shares=5, secret_threshold=3)
-                is_kms = False
-            else:
-                raise e
+        else:
+            typer.echo("Detected Shamir seal. Initializing with secret shares...")
+            result = client.sys.initialize(secret_shares=5, secret_threshold=3)
+            typer.echo("Successfully initialized with Shamir seal.")
 
         root_token = result["root_token"]
         client.token = root_token

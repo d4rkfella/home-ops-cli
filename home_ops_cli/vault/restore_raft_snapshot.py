@@ -97,22 +97,15 @@ def restore_raft_snapshot(
     vault_ca_path: VaultCAPathOption = None,
     vault_skip_verify: VaultSkipVerifyOption = False,
 ):
-    import boto3
     import botocore.exceptions
     import hvac
     from click.core import ParameterSource
     from hvac.api.system_backend import Raft
 
-    from ..utils import handle_vault_authentication
+    from ..utils import create_s3_client, handle_vault_authentication
 
     if filename and filename_regex:
         raise typer.BadParameter("filename and filename-regex are mutually exclusive")
-
-    if (
-        aws_endpoint_url
-        and ctx.get_parameter_source("aws_endpoint_url") == ParameterSource.COMMANDLINE
-    ):
-        os.environ["AWS_ENDPOINT_URL"] = aws_endpoint_url
 
     if (
         vault_address
@@ -131,6 +124,12 @@ def restore_raft_snapshot(
         and ctx.get_parameter_source("aws_profile") == ParameterSource.COMMANDLINE
     ):
         os.environ["AWS_PROFILE"] = aws_profile
+
+    if (
+        aws_endpoint_url
+        and ctx.get_parameter_source("aws_endpoint_url") == ParameterSource.COMMANDLINE
+    ):
+        os.environ["AWS_ENDPOINT_URL"] = aws_endpoint_url
 
     if (
         aws_access_key_id
@@ -159,15 +158,12 @@ def restore_raft_snapshot(
         k8s_role=vault_k8s_role,
         k8s_mount_point=vault_k8s_mount_point,
     )
-
     if vault_client.sys.is_sealed():
         typer.secho("Vault is sealed. Cannot proceed..", fg=typer.colors.RED, bold=True)
         raise typer.Exit(code=1)
 
     typer.echo("Initializing S3 client...")
-
-    session = boto3.Session()
-    s3_client = session.client("s3")
+    s3_client = create_s3_client(bucket_name=s3_bucket_name)
     typer.echo("S3 client initialized.")
 
     if filename:

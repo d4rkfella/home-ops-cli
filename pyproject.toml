@@ -1,6 +1,6 @@
 [project]
 name = "home-ops-cli"
-version = "0.4.51"
+version = "0.4.52"
 description = "A CLI tool for managing home operations tasks."
 readme = "README.md"
 license = { text = "MIT" }
@@ -25,7 +25,6 @@ dependencies = [
     "typer==0.21.1",
     "kubevirt-py==1.7.0",
     "validators==0.35.0",
-    "mypy-boto3-s3==1.42.21"
 ]
 
 [project.scripts]
@@ -37,4 +36,4 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.group.dev.dependencies]
 types-hvac = "2.4.0.20251115"
-boto3-stubs = "1.42.36"
+mypy-boto3-s3 = "1.42.21"

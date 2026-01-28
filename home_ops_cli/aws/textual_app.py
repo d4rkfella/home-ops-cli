@@ -1,10 +1,11 @@
+from __future__ import annotations
+
 import datetime
 import os
 from typing import TYPE_CHECKING, Any, cast
 
-import boto3
+from boto3 import Session
 from botocore.exceptions import NoCredentialsError, ProfileNotFound
-from mypy_boto3_s3.client import S3Client
 from textual import work
 from textual.app import App, ComposeResult
 from textual.color import Gradient
@@ -27,6 +28,10 @@ from textual.widgets import (
 )
 from textual.widgets.tree import TreeNode
 
+if TYPE_CHECKING:
+    from mypy_boto3_s3 import S3Client
+    from mypy_boto3_s3.type_defs import ObjectIdentifierTypeDef, ObjectTypeDef
+
 
 class S3Browser(App):
     TITLE = "S3 Browser"
@@ -46,10 +51,11 @@ class S3Browser(App):
         paginator = s3.get_paginator("list_objects_v2")
         batch_size = 1000
         total_deleted = 0
-        batch = []
+        batch: list[ObjectIdentifierTypeDef] = []
 
         for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-            for obj in page.get("Contents", []):
+            contents: list[ObjectTypeDef] = page.get("Contents", [])
+            for obj in contents:
                 batch.append({"Key": cast(str, obj.get("Key"))})
 
                 if len(batch) == batch_size:
@@ -93,7 +99,7 @@ class InputModalScreen(ModalScreen[str]):
             yield Button("Submit", id="submit-btn")
             yield Button("Cancel", id="cancel-btn")
 
-    async def on_button_pressed(self, event):
+    async def on_button_pressed(self, event: Button.Pressed):
         input_widget = self.query_one("#input-field", Input)
         if event.button.id == "submit-btn":
             value = input_widget.value.strip()
@@ -101,13 +107,13 @@ class InputModalScreen(ModalScreen[str]):
         else:
             self.dismiss(None)
 
-    async def on_input_submitted(self, event):
+    async def on_input_submitted(self, event: Input.Submitted):
         value = event.value.strip()
         self.dismiss(value)
 
 
 class FilePreviewScreen(ModalScreen):
-    app: "S3Browser"  # type: ignore[assignment]
+    app: "S3Browser"
     BINDINGS = [("escape", "close", "Close")]
 
     def __init__(self, bucket, key):
@@ -161,11 +167,11 @@ class FilePreviewScreen(ModalScreen):
         text_area.language = lang_map.get(ext, None)
 
     async def action_close(self):
-        await self.app.pop_screen()
+        self.dismiss(None)
 
 
 class DownloadScreen(ModalScreen):
-    app: "S3Browser"  # type: ignore[assignment]
+    app: "S3Browser"
     DOWNLOAD_GRADIENT = Gradient(
         (0.0, "#A00000"),
         (0.33, "#FF7300"),
@@ -214,7 +220,7 @@ class DownloadScreen(ModalScreen):
 
 
 class UploadScreen(ModalScreen):
-    app: "S3Browser"  # type: ignore[assignment]
+    app: "S3Browser"
 
     CSS = """
     UploadScreen {
@@ -351,13 +357,13 @@ class UploadScreen(ModalScreen):
 
 
 class ProfileSelectScreen(Screen):
-    app: "S3Browser"  # type: ignore[assignment]
+    app: "S3Browser"
 
     def compose(self) -> ComposeResult:
         yield Header()
         yield Static("Select AWS Profile", classes="title")
         try:
-            session = boto3.session.Session()
+            session = Session()
             profiles = session.available_profiles
             if not profiles:
                 yield Static("No profiles found in ~/.aws/credentials or ~/.aws/config")
@@ -373,8 +379,7 @@ class ProfileSelectScreen(Screen):
     async def on_list_view_selected(self, event: ListView.Selected):
         profile = event.item.name
         try:
-            session = boto3.session.Session(profile_name=profile)
-            self.app.s3 = session.client("s3")
+            self.app.s3 = cast(S3Client, Session(profile_name=profile).client("s3"))
             await self.app.push_screen(BucketSelectScreen(profile))
         except ProfileNotFound:
             self.app.notify(
@@ -389,7 +394,7 @@ class ProfileSelectScreen(Screen):
 
 
 class BucketSelectScreen(Screen):
-    app: "S3Browser"  # type: ignore[assignment]
+    app: "S3Browser"
 
     BINDINGS = [
         ("b", "back", "Back"),
@@ -511,7 +516,7 @@ class BucketSelectScreen(Screen):
 
 
 class ObjectBrowserTreeScreen(Screen):
-    app: "S3Browser"  # type: ignore[assignment]
+    app: "S3Browser"
 
     BINDINGS = [
         ("b", "back", "Back"),
@@ -812,8 +817,6 @@ class ModalMessageScreen(ModalScreen):
 
 
 class ConfirmDeleteScreen(ModalScreen[bool]):
-    app: "S3Browser"  # type: ignore[assignment]
-
     CSS = """
     ConfirmDeleteScreen {
         align: center middle;

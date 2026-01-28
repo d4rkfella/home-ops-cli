@@ -6,12 +6,13 @@ import re
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, overload
+from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 if TYPE_CHECKING:
     import aiohttp
     import hvac
     from rich.console import Console
+    from mypy_boto3_s3 import S3Client
 
 import typer
 
@@ -309,12 +310,12 @@ def handle_vault_authentication(
     k8s_mount_point: str = "kubernetes",
     k8s_token_path: Path = Path("/var/run/secrets/kubernetes.io/serviceaccount/token"),
 ) -> hvac.Client:
-    """Handle Vault authentication using token or Kubernetes auth."""
     from hvac.exceptions import InvalidRequest, VaultError
 
     TOKEN_FILEPATH = Path.home() / ".vault-token"
 
     if vault_token:
+        client.token = vault_token
         return client
 
     if TOKEN_FILEPATH.exists():
@@ -351,3 +352,33 @@ def handle_vault_authentication(
         bold=True,
     )
     raise typer.Exit(code=1)
+
+
+def create_s3_client(bucket_name: str):
+    import boto3
+    import botocore.exceptions
+
+    try:
+        session = boto3.Session()
+        s3_client: S3Client = cast(S3Client, session.client("s3"))
+        s3_client.head_bucket(Bucket=bucket_name)
+        return s3_client
+
+    except (
+        botocore.exceptions.NoCredentialsError,
+        botocore.exceptions.PartialCredentialsError,
+    ) as e:
+        typer.secho(
+            f"Authentication Error: {e}",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    except botocore.exceptions.ClientError as e:
+        error_msg = e.response.get("Error", {}).get("Message", "")
+        typer.secho(
+            f"Error: S3 Head Bucket operation failed: {error_msg}",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)

@@ -13,6 +13,7 @@ if TYPE_CHECKING:
         Progress,
         TaskID,
     )
+    from kubernetes_asyncio.dynamic import DynamicClient
 
 from ..utils import async_command
 
@@ -97,7 +98,7 @@ def parse_resource(arg: str) -> set[ResourceSpec]:
 
 
 async def wait_for_resources_group(
-    dyn,
+    dyn: DynamicClient,
     resources: set[ResourceSpec],
     spinner_progress: Progress,
     overall_progress: Progress,
@@ -127,7 +128,7 @@ async def wait_for_resources_group(
     }
 
     async def _watch_loop():
-        async for event in api.watch(namespace=namespace, watcher=watcher):
+        async for event in api.watch(namespace=namespace, watcher=watcher):  # type: ignore[reportGeneralTypeIssues]
             obj = event["object"]
             name = obj.metadata.name
             if name not in remaining:

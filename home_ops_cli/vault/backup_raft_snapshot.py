@@ -30,7 +30,6 @@ from ..options import (
     VaultSkipVerifyOption,
     VaultTokenOption,
 )
-from ..utils import handle_vault_authentication
 
 app = typer.Typer()
 
@@ -144,6 +143,8 @@ def backup_raft_snapshot(
     import boto3
     import hvac
 
+    from ..utils import create_s3_client, handle_vault_authentication
+
     if (
         aws_endpoint_url
         and ctx.get_parameter_source("aws_endpoint_url") == ParameterSource.COMMANDLINE
@@ -198,9 +199,7 @@ def backup_raft_snapshot(
         raise typer.Exit(code=1)
 
     typer.echo("Initializing S3 client...")
-
-    session = boto3.Session()
-    s3_client = session.client("s3")
+    s3_client = create_s3_client(bucket_name=s3_bucket_name)
     typer.echo("S3 client initialized.")
 
     try:
