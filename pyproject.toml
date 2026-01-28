@@ -36,4 +36,4 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.group.dev.dependencies]
 types-hvac = "2.4.0.20251115"
-mypy-boto3-s3 = "1.42.21"
+mypy-boto3-s3 = "1.42.37"
