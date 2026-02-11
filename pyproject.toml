@@ -22,7 +22,7 @@ dependencies = [
     "inquirer==3.4.1",
     "pyusb==1.3.1",
     "textual-speedups==0.2.1",
-    "typer==0.21.1",
+    "typer==0.22.0",
     "kubevirt-py==1.7.0",
     "validators==0.35.0",
 ]
