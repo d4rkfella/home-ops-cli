@@ -15,7 +15,7 @@ dependencies = [
     "kr8s==0.20.15",
     "aiohttp==3.13.3",
     "aiofiles==25.1.0",
-    "aiogzip==1.1.0",
+    "aiogzip==1.2.2",
     "textual==7.5.0",
     "boto3==1.42.46",
     "botocore[crt]",
